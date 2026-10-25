@@ -1,2180 +1,2292 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
+import { masterAlkesCollection, type AlkesItem } from './data/alkesData'
+import { blogArticles, type BlogArticle } from './data/blogData'
+import '~/assets/css/main.css'
 
-// ==========================================
-// 1. STATE & KONFIGURASI API (LARAVEL HERD)
-// ==========================================
-const config = useRuntimeConfig()
-const defaultBase = config.public.apiBase || 'http://app.test/api'
-const apiBase = ref(defaultBase)
-const endpoint = ref('/alkes')
-const activeNav = ref<'katalog' | 'pinjam' | 'tracking' | 'api-info'>('katalog')
-const kategoriFilter = ref('Semua')
+// ============================================================================
+// 1. TEMA & MODE GELAP / TERANG (DEFAULT: TEMA TERANG MINT & BIRU)
+// ============================================================================
+const isDark = ref(false)
 
-// Target URL API
-const fullApiUrl = computed(() => {
-  const base = apiBase.value.replace(/\/+$/, '')
-  const ep = endpoint.value.startsWith('/') ? endpoint.value : `/${endpoint.value}`
-  return `${base}${ep}`
+const applyTheme = (dark: boolean) => {
+  if (typeof document !== 'undefined') {
+    if (dark) {
+      document.documentElement.classList.add('dark')
+      document.body.classList.add('dark')
+      localStorage.setItem('anisa_theme', 'dark')
+    } else {
+      document.documentElement.classList.remove('dark')
+      document.body.classList.remove('dark')
+      localStorage.setItem('anisa_theme', 'light')
+    }
+  }
+}
+
+const toggleDarkMode = () => {
+  isDark.value = !isDark.value
+  applyTheme(isDark.value)
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('anisa_theme')
+    if (saved === 'dark') {
+      isDark.value = true
+      applyTheme(true)
+    } else {
+      isDark.value = false
+      applyTheme(false)
+    }
+  }
 })
 
-// Fetch data Alat Kesehatan dari Backend Laravel Herd
-const { data, pending, error, refresh } = await useFetch(fullApiUrl, {
+// ============================================================================
+// 2. NAVIGASI TAMPILAN HALAMAN (PORTAL, BLOG, INVENTARIS)
+// ============================================================================
+type ViewPage = 'portal' | 'blog' | 'inventaris'
+const currentView = ref<ViewPage>('portal')
+const isMobileMenuOpen = ref(false)
+
+// Pengamanan Area Backend Khusus Admin Inventaris
+const isAdminAuthenticated = ref(false)
+const isAdminLoginModalOpen = ref(false)
+const adminPinInput = ref('')
+const adminPinError = ref('')
+
+const bukaAksesAdmin = () => {
+  if (isAdminAuthenticated.value) {
+    currentView.value = 'inventaris'
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+  } else {
+    adminPinInput.value = ''
+    adminPinError.value = ''
+    isAdminLoginModalOpen.value = true
+  }
+}
+
+const verifikasiAdmin = () => {
+  const pin = adminPinInput.value.trim()
+  if (pin === '1234' || pin === 'admin' || pin === 'admin123') {
+    isAdminAuthenticated.value = true
+    isAdminLoginModalOpen.value = false
+    currentView.value = 'inventaris'
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+    toast.add({
+      title: 'Akses Admin Terverifikasi',
+      description: 'Selamat datang di area backend pengelolaan inventaris alkes.',
+      color: 'success'
+    })
+  } else {
+    adminPinError.value = 'PIN tidak sesuai. Masukkan PIN Admin: 1234'
+  }
+}
+
+const logoutAdmin = () => {
+  isAdminAuthenticated.value = false
+  currentView.value = 'portal'
+  if (typeof window !== 'undefined') {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+  toast.add({
+    title: 'Sesi Admin Ditutup',
+    description: 'Anda telah kembali ke halaman publik pelanggan.',
+    color: 'info'
+  })
+}
+
+const setView = (page: ViewPage, targetSection?: string) => {
+  if (page === 'inventaris' && !isAdminAuthenticated.value) {
+    bukaAksesAdmin()
+    return
+  }
+  currentView.value = page
+  isMobileMenuOpen.value = false
+  if (targetSection && typeof document !== 'undefined') {
+    setTimeout(() => {
+      const el = document.getElementById(targetSection)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth' })
+      }
+    }, 100)
+  } else if (typeof window !== 'undefined') {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+}
+
+// ============================================================================
+// 3. SAFE IMAGE FALLBACK HANDLER
+// Menjamin foto lokal maupun placeholder cadangan selalu tampil aman tanpa error
+// ============================================================================
+const handleImgError = (event: Event, fallbackUrl?: string) => {
+  const target = event.target as HTMLImageElement
+  const fallback = fallbackUrl || 'https://images.unsplash.com/photo-1584982751601-97dcc096659c?auto=format&fit=crop&w=900&q=80'
+  if (target && target.src !== fallback) {
+    target.src = fallback
+  }
+}
+
+// ============================================================================
+// 4. INTEGRASI DATA REAKTIF & API LARAVEL (DENGAN MASTER FALLBACK)
+// ============================================================================
+const config = useRuntimeConfig()
+const API_BASE_URL = config.public.apiBase || 'http://127.0.0.1:8000/alat'
+
+// Resilient Toast Notification system
+interface ToastNotification {
+  id: number
+  title: string
+  description?: string
+  color?: 'success' | 'warning' | 'error' | 'info' | 'neutral'
+}
+const activeToasts = ref<ToastNotification[]>([])
+const addToast = (t: { title: string; description?: string; color?: string }) => {
+  const id = Date.now() + Math.random()
+  activeToasts.value.push({ id, title: t.title, description: t.description, color: (t.color as any) || 'info' })
+  setTimeout(() => {
+    activeToasts.value = activeToasts.value.filter(item => item.id !== id)
+  }, 4000)
+}
+const toast = { add: addToast }
+
+const { data: apiResponse, pending: isLoadingApi, error: apiError, refresh } = await useFetch(API_BASE_URL, {
   lazy: false,
   server: false,
-  key: () => fullApiUrl.value,
+  key: 'anisa-alkes-fetch',
   headers: {
     'Accept': 'application/json',
     'X-Requested-With': 'XMLHttpRequest'
   }
 })
 
-// ==========================================
-// 2. DATA ALAT KESEHATAN (ALKES)
-// Sinkron dengan Database Laravel atau Fallback
-// ==========================================
-const defaultAlkesList = [
-  {
-    id: 1,
-    nama_alkes: 'Tensimeter Digital Otomatis (Sphygmomanometer)',
-    kategori: 'Alat Diagnostik',
-    stok: 15,
-    kondisi: 'Tersedia',
-    deskripsi: 'Alat pengukur tekanan darah digital akurat dengan layar LCD besar dan memori otomatis.',
-    kode_alat: 'ALK-TNS-01',
-    lokasi_lab: 'Lab Keperawatan & Diagnostik'
-  },
-  {
-    id: 2,
-    nama_alkes: 'Stetoskop Littmann Classic III',
-    kategori: 'Alat Diagnostik',
-    stok: 20,
-    kondisi: 'Tersedia',
-    deskripsi: 'Instrumen akustik sensitivitas tinggi untuk auskultasi suara jantung dan paru-paru.',
-    kode_alat: 'ALK-STT-02',
-    lokasi_lab: 'Lab Fisiologi & Praktikum'
-  },
-  {
-    id: 3,
-    nama_alkes: 'Pulse Oximeter Fingertip',
-    kategori: 'Alat Diagnostik',
-    stok: 25,
-    kondisi: 'Tersedia',
-    deskripsi: 'Pengukur saturasi oksigen (SpO2) dan denyut nadi praktis via ujung jari.',
-    kode_alat: 'ALK-OXI-03',
-    lokasi_lab: 'Lab Keperawatan Dasar'
-  },
-  {
-    id: 4,
-    nama_alkes: 'Termometer Inframerah Non-Contact',
-    kategori: 'Alat Diagnostik',
-    stok: 18,
-    kondisi: 'Tersedia',
-    deskripsi: 'Termometer dahi tanpa sentuh untuk deteksi cepat suhu tubuh dengan alarm demam.',
-    kode_alat: 'ALK-TRM-04',
-    lokasi_lab: 'Lab Kedaruratan Medis'
-  },
-  {
-    id: 5,
-    nama_alkes: 'Nebulizer Kompresor Portable',
-    kategori: 'Alat Terapi',
-    stok: 8,
-    kondisi: 'Stok Menipis',
-    deskripsi: 'Perangkat aerosol untuk mengubah obat cair menjadi uap inhalasi terapi pernapasan.',
-    kode_alat: 'ALK-NEB-05',
-    lokasi_lab: 'Lab Farmasi & Terapi'
-  },
-  {
-    id: 6,
-    nama_alkes: 'Kursi Roda Medis Standar',
-    kategori: 'Rehabilitasi Medis',
-    stok: 6,
-    kondisi: 'Tersedia',
-    deskripsi: 'Kursi roda lipat rangka baja tahan karat untuk mobilitas pasien rumah sakit dan kampus.',
-    kode_alat: 'ALK-WCH-06',
-    lokasi_lab: 'Gudang Inventaris Alkes'
+const localAlkesList = ref<AlkesItem[]>([...masterAlkesCollection])
+
+const normalizeApiData = (res: any): AlkesItem[] => {
+  let list: any[] = []
+  if (Array.isArray(res)) {
+    list = res
+  } else if (res && Array.isArray(res.data)) {
+    list = res.data
+  } else if (res && typeof res === 'object' && res.data) {
+    list = Array.isArray(res.data) ? res.data : [res.data]
   }
+
+  if (list && list.length > 0) {
+    return list.map((item, idx) => {
+      const fallbackMatch = masterAlkesCollection[idx % masterAlkesCollection.length]
+      const nama = item.nama_alat || item.nama_alkes || item.nama || item.name || fallbackMatch.nama_alat
+      return {
+        id: item.id || idx + 1,
+        kode_alat: item.kode_alat || item.kode || `ALK-00${item.id || idx + 1}`,
+        nama_alat: nama,
+        nama_alkes: nama,
+        kategori: item.kategori || item.category || fallbackMatch.kategori,
+        stok: Number(item.stok !== undefined ? item.stok : (item.stock !== undefined ? item.stock : fallbackMatch.stok)),
+        status: (item.status || item.kondisi || 'Tersedia') as any,
+        lokasi_lab: item.lokasi_lab || item.lokasi || fallbackMatch.lokasi_lab,
+        deskripsi: item.deskripsi || item.description || fallbackMatch.deskripsi,
+        gambar: item.gambar || fallbackMatch.gambar,
+        fallbackGambar: fallbackMatch.fallbackGambar || fallbackMatch.gambar,
+        kemenkes_akl: fallbackMatch.kemenkes_akl,
+        spesifikasi: fallbackMatch.spesifikasi,
+        harga_estimasi: fallbackMatch.harga_estimasi,
+        garansi: fallbackMatch.garansi,
+        is_featured: fallbackMatch.is_featured
+      }
+    })
+  }
+  return masterAlkesCollection
+}
+
+watch(apiResponse, (newVal) => {
+  if (newVal) {
+    localAlkesList.value = normalizeApiData(newVal)
+  }
+}, { immediate: true })
+
+onMounted(() => {
+  if (!apiResponse.value || (Array.isArray(apiResponse.value) && apiResponse.value.length === 0)) {
+    localAlkesList.value = [...masterAlkesCollection]
+  }
+})
+
+const isConnectedToApi = computed(() => !apiError.value && !!apiResponse.value)
+
+const refreshData = async () => {
+  try {
+    await refresh()
+    toast.add({
+      title: 'Sinkronisasi Berhasil',
+      description: 'Data alkes berhasil disinkronisasi dari server pusat Anisa Medika.',
+      color: 'success'
+    })
+  } catch {
+    toast.add({
+      title: 'Koneksi Offline',
+      description: 'Menampilkan katalog lokal Anisa Medika berstandar Kemenkes RI.',
+      color: 'info'
+    })
+  }
+}
+
+// ============================================================================
+// 5. GRID GALERI / KATALOG PRODUK ALKES DI BAWAH BANNER
+// ============================================================================
+const galleryCategory = ref('Semua')
+const gallerySearch = ref('')
+const gallerySort = ref<'default' | 'name' | 'stock' | 'price'>('default')
+
+const galleryCategories = [
+  'Semua',
+  'Alat Diagnostik',
+  'Monitoring Pasien',
+  'Bedah & Gawat Darurat',
+  'Rehabilitasi Medis',
+  'Laboratorium & Rehab'
 ]
 
-// Normalisasi data dari API (fleksibel mendukung field nama_alkes, nama, name, dll.)
-const rawAlkes = computed(() => {
-  if (data.value) {
-    const res = data.value as any
-    let list: any[] = []
-    if (Array.isArray(res)) list = res
-    else if (res && Array.isArray(res.data)) list = res.data
-    else if (res && typeof res === 'object') list = [res]
+const parsePriceNumber = (priceStr?: string): number => {
+  if (!priceStr) return 0
+  const clean = priceStr.replace(/[^0-9]/g, '')
+  return parseInt(clean, 10) || 0
+}
 
-    if (list.length > 0) {
-      return list.map((item, idx) => ({
-        id: item.id || idx + 1,
-        nama_alkes: item.nama_alkes || item.nama_alat || item.nama || item.name || `Alat Kesehatan #${idx + 1}`,
-        kategori: item.kategori || item.category || item.jenis || 'Peralatan Medis',
-        stok: item.stok !== undefined ? item.stok : (item.stock !== undefined ? item.stock : 10),
-        kondisi: item.kondisi || item.status || (item.stok > 0 ? 'Tersedia' : 'Habis'),
-        deskripsi: item.deskripsi || item.description || item.spesifikasi || item.keterangan || 'Peralatan medis inventaris kampus.',
-        kode_alat: item.kode_alat || item.kode || `ALK-00${item.id || idx + 1}`,
-        lokasi_lab: item.lokasi_lab || item.lokasi || 'Laboratorium Kampus'
-      }))
-    }
-  }
-  return defaultAlkesList
-})
+const filteredGalleryList = computed(() => {
+  const query = gallerySearch.value.trim().toLowerCase()
+  let list = localAlkesList.value.filter(item => {
+    const matchCategory = galleryCategory.value === 'Semua' || 
+      (galleryCategory.value === 'Laboratorium & Rehab' 
+        ? (item.kategori.includes('Laboratorium') || item.kategori.includes('Rehabilitasi'))
+        : item.kategori.toLowerCase().includes(galleryCategory.value.toLowerCase()))
 
-// ==========================================
-// 3. FITUR PENCARIAN (SLIDE 16 & 18)
-// Case-insensitive & trim spasi tepi
-// ==========================================
-const kataKunci = ref('')
-
-const listAlkes = computed(() => {
-  const query = kataKunci.value.trim().toLowerCase()
-  return rawAlkes.value.filter(item => {
-    const matchQuery = !query || 
-      item.nama_alkes.toLowerCase().includes(query) ||
+    const matchQuery = !query ||
+      item.nama_alat.toLowerCase().includes(query) ||
+      item.kode_alat.toLowerCase().includes(query) ||
       item.kategori.toLowerCase().includes(query) ||
-      item.deskripsi.toLowerCase().includes(query) ||
-      item.kode_alat.toLowerCase().includes(query)
+      (item.deskripsi && item.deskripsi.toLowerCase().includes(query))
 
-    const matchKategori = kategoriFilter.value === 'Semua' || item.kategori === kategoriFilter.value
+    return matchCategory && matchQuery
+  })
 
-    return matchQuery && matchKategori
+  if (gallerySort.value === 'name') {
+    list = [...list].sort((a, b) => a.nama_alat.localeCompare(b.nama_alat))
+  } else if (gallerySort.value === 'stock') {
+    list = [...list].sort((a, b) => b.stok - a.stok)
+  } else if (gallerySort.value === 'price') {
+    list = [...list].sort((a, b) => parsePriceNumber(b.harga_estimasi) - parsePriceNumber(a.harga_estimasi))
+  }
+
+  return list
+})
+
+// Modal Detail Spesifikasi Alat
+const isDetailModalOpen = ref(false)
+const selectedDetailItem = ref<AlkesItem | null>(null)
+
+const bukaDetailAlat = (item: AlkesItem) => {
+  selectedDetailItem.value = item
+  isDetailModalOpen.value = true
+}
+
+// ============================================================================
+// 6. HALAMAN & DATA BLOG ALKES ANISA MEDIKA
+// ============================================================================
+const blogCategory = ref('Semua')
+const blogSearch = ref('')
+const blogCategories = [
+  'Semua',
+  'Regulasi & Standar',
+  'Teknologi Medis',
+  'Manajemen Faskes',
+  'Tips Pemeliharaan',
+  'Kegawatdaruratan'
+]
+
+const filteredBlogList = computed(() => {
+  const query = blogSearch.value.trim().toLowerCase()
+  return blogArticles.filter(art => {
+    const matchCat = blogCategory.value === 'Semua' || art.kategori === blogCategory.value
+    const matchQuery = !query ||
+      art.judul.toLowerCase().includes(query) ||
+      art.ringkasan.toLowerCase().includes(query) ||
+      art.penulis.nama.toLowerCase().includes(query) ||
+      art.tags.some(t => t.toLowerCase().includes(query))
+
+    return matchCat && matchQuery
   })
 })
 
-// Daftar Kategori Unik
-const kategoriList = computed(() => {
-  const set = new Set(rawAlkes.value.map(i => i.kategori))
-  return ['Semua', ...Array.from(set)]
-})
+const isArticleModalOpen = ref(false)
+const selectedArticle = ref<BlogArticle | null>(null)
 
-// Quick Stats Metric
-const totalStok = computed(() => {
-  return rawAlkes.value.reduce((total, item) => total + (Number(item.stok) || 0), 0)
-})
-
-// Helper untuk icon kartu alkes yang menarik & cerah
-const getAlkesIcon = (nama: string, kategori: string) => {
-  const lower = nama.toLowerCase()
-  if (lower.includes('tensi')) return '🩺'
-  if (lower.includes('stetoskop')) return '🫀'
-  if (lower.includes('oximeter') || lower.includes('oksimeter')) return '💓'
-  if (lower.includes('termometer') || lower.includes('suhu')) return '🌡️'
-  if (lower.includes('nebulizer') || lower.includes('inhalasi')) return '💨'
-  if (lower.includes('kursi roda')) return '♿'
-  if (kategori.toLowerCase().includes('terapi')) return '💊'
-  if (kategori.toLowerCase().includes('rehabilitasi')) return '🚶'
-  return '🔬'
+const bukaArtikel = (article: BlogArticle) => {
+  selectedArticle.value = article
+  isArticleModalOpen.value = true
 }
 
-// ==========================================
-// 4. FORMULIR PEMINJAMAN ALKES (SLIDE 23)
-// ==========================================
-const form = ref({
-  namaPeminjam: '',
-  nim: '',
-  programStudi: 'S1 Informatika',
-  alkesDipilih: 'Tensimeter Digital Otomatis (Sphygmomanometer)',
-  jumlahPinjam: 1,
-  tanggalPinjam: new Date().toISOString().split('T')[0],
-  keperluan: ''
+// ============================================================================
+// 7. FORMULIR PENAWARAN & KONSULTASI WHATSAPP
+// ============================================================================
+const isQuoteModalOpen = ref(false)
+const quoteForm = ref({
+  nama: '',
+  instansi: '',
+  telepon: '',
+  alatDipilih: '',
+  pesan: ''
 })
 
-const submitSuccess = ref(false)
-const noPeminjaman = ref('')
-
-const pilihAlkesForm = (nama: string) => {
-  form.value.alkesDipilih = nama
-  activeNav.value = 'pinjam'
-  submitSuccess.value = false
-  window.scrollTo({ top: 0, behavior: 'smooth' })
+const bukaModalPenawaran = (namaAlat?: string) => {
+  quoteForm.value.alatDipilih = namaAlat || ''
+  isQuoteModalOpen.value = true
 }
 
-const kirimPeminjaman = () => {
-  if (!form.value.namaPeminjam || !form.value.nim || !form.value.keperluan) {
-    alert('Mohon lengkapi semua kolom formulir bertanda bintang (*).')
+const kirimPenawaran = () => {
+  if (!quoteForm.value.nama.trim() || !quoteForm.value.telepon.trim()) {
+    toast.add({
+      title: 'Data Belum Lengkap',
+      description: 'Mohon isi nama lengkap dan nomor WhatsApp/telepon Anda.',
+      color: 'warning'
+    })
     return
   }
-  const randomNo = Math.floor(1000 + Math.random() * 9000)
-  noPeminjaman.value = `PINJAM-ALKES-${randomNo}`
 
-  riwayatPinjam.value.unshift({
-    noTracking: noPeminjaman.value,
-    alkes: form.value.alkesDipilih,
-    peminjam: form.value.namaPeminjam,
-    nim: form.value.nim,
-    jumlah: form.value.jumlahPinjam,
-    tanggal: form.value.tanggalPinjam,
-    status: 'Menunggu Persetujuan Kepala Lab'
+  const pesanWA = encodeURIComponent(
+    `Halo Anisa Medika, saya ${quoteForm.value.nama} dari ${quoteForm.value.instansi || 'Fasilitas Medis'}. ` +
+    `Saya tertarik meminta informasi harga & spesifikasi resmi untuk: ${quoteForm.value.alatDipilih || 'Peralatan Medis'}. ` +
+    `Catatan kebutuhan: ${quoteForm.value.pesan || '-'}`
+  )
+
+  toast.add({
+    title: 'Permintaan Diterima!',
+    description: 'Tim konsultan spesialis Anisa Medika akan segera menghubungi Anda.',
+    color: 'success'
   })
 
-  submitSuccess.value = true
+  isQuoteModalOpen.value = false
+
+  if (typeof window !== 'undefined') {
+    window.open(`https://wa.me/6281234567890?text=${pesanWA}`, '_blank')
+  }
 }
 
-// ==========================================
-// 5. LACAK STATUS PINJAM (SLIDE 07)
-// ==========================================
-const inputTracking = ref('')
-const trackingResult = ref<any>(null)
+// ============================================================================
+// 8. MANAJEMEN INVENTARIS ALKES (BACK-OFFICE)
+// ============================================================================
+const searchQuery = ref('')
+const selectedKategori = ref('Semua')
+const selectedStatus = ref('Semua')
 
-const riwayatPinjam = ref([
-  {
-    noTracking: 'PINJAM-ALKES-3482',
-    alkes: 'Tensimeter Digital Otomatis (Sphygmomanometer)',
-    peminjam: 'Ahmad Faiz',
-    nim: '20230140012',
-    jumlah: 2,
-    tanggal: '2026-10-14',
-    status: 'Disetujui - Siap Diambil di Lab'
-  },
-  {
-    noTracking: 'PINJAM-ALKES-2891',
-    alkes: 'Stetoskop Littmann Classic III',
-    peminjam: 'Nabila Putri',
-    nim: '20230140045',
-    jumlah: 1,
-    tanggal: '2026-10-12',
-    status: 'Alat Sedang Digunakan (Aktif)'
+const kategoriOptions = [
+  'Semua',
+  'Alat Diagnostik',
+  'Monitoring Pasien',
+  'Bedah & Gawat Darurat',
+  'Rehabilitasi Medis',
+  'Laboratorium & Rehab'
+]
+
+const statusOptions = ['Semua', 'Tersedia', 'Dipakai', 'Rusak', 'Stok Terbatas']
+
+const filteredAlkes = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  return localAlkesList.value.filter(item => {
+    const matchQuery = !query ||
+      item.kode_alat.toLowerCase().includes(query) ||
+      item.nama_alat.toLowerCase().includes(query) ||
+      (item.nama_alkes && item.nama_alkes.toLowerCase().includes(query)) ||
+      item.kategori.toLowerCase().includes(query) ||
+      (item.lokasi_lab && item.lokasi_lab.toLowerCase().includes(query))
+
+    const matchKategori = selectedKategori.value === 'Semua' || item.kategori === selectedKategori.value
+    const matchStatus = selectedStatus.value === 'Semua' || item.status === selectedStatus.value
+
+    return matchQuery && matchKategori && matchStatus
+  })
+})
+
+const totalAlkesCount = computed(() => localAlkesList.value.length)
+const totalStokUnit = computed(() => localAlkesList.value.reduce((acc, i) => acc + (Number(i.stok) || 0), 0))
+const totalTersedia = computed(() => localAlkesList.value.filter(i => i.status === 'Tersedia').length)
+const totalDipakai = computed(() => localAlkesList.value.filter(i => i.status === 'Dipakai').length)
+const totalRusak = computed(() => localAlkesList.value.filter(i => i.status === 'Rusak').length)
+
+const tableColumns = [
+  { accessorKey: 'kode_alat', header: 'Kode Alat' },
+  { accessorKey: 'nama_alat', header: 'Nama Alat & Lokasi' },
+  { accessorKey: 'kategori', header: 'Kategori' },
+  { accessorKey: 'stok', header: 'Stok Fisik' },
+  { accessorKey: 'status', header: 'Status' },
+  { accessorKey: 'actions', header: 'Aksi' }
+]
+
+// Modal CRUD Inventaris
+const isModalOpen = ref(false)
+const isEditMode = ref(false)
+const editingId = ref<number | string | null>(null)
+const isSubmitting = ref(false)
+
+const formData = ref<{
+  kode_alat: string
+  nama_alat: string
+  kategori: string
+  stok: number
+  status: 'Tersedia' | 'Dipakai' | 'Rusak' | 'Stok Terbatas'
+  lokasi_lab: string
+  deskripsi: string
+}>({
+  kode_alat: '',
+  nama_alat: '',
+  kategori: 'Alat Diagnostik',
+  stok: 1,
+  status: 'Tersedia',
+  lokasi_lab: 'Lab Keperawatan & Diagnostik',
+  deskripsi: ''
+})
+
+const bukaModalTambah = () => {
+  isEditMode.value = false
+  editingId.value = null
+  formData.value = {
+    kode_alat: `ALK-ANS-${String(localAlkesList.value.length + 1).padStart(2, '0')}`,
+    nama_alat: '',
+    kategori: 'Alat Diagnostik',
+    stok: 5,
+    status: 'Tersedia',
+    lokasi_lab: 'Lab Keperawatan & Diagnostik',
+    deskripsi: ''
   }
-])
+  isModalOpen.value = true
+}
 
-const cekStatus = () => {
-  const query = inputTracking.value.trim().toUpperCase()
-  if (!query) {
-    trackingResult.value = null
+const bukaModalEdit = (item: AlkesItem) => {
+  isEditMode.value = true
+  editingId.value = item.id
+  formData.value = {
+    kode_alat: item.kode_alat,
+    nama_alat: item.nama_alat,
+    kategori: item.kategori,
+    stok: item.stok,
+    status: (item.status as any) || 'Tersedia',
+    lokasi_lab: item.lokasi_lab || 'Lab Anisa Medika',
+    deskripsi: item.deskripsi || ''
+  }
+  isModalOpen.value = true
+}
+
+const simpanAlat = async () => {
+  if (!formData.value.nama_alat.trim()) {
+    toast.add({
+      title: 'Nama Alat Wajib Diisi',
+      description: 'Mohon masukkan nama peralatan medis dengan jelas.',
+      color: 'warning'
+    })
     return
   }
-  const found = riwayatPinjam.value.find(item => item.noTracking === query)
-  trackingResult.value = found || { notFound: true }
+
+  isSubmitting.value = true
+
+  try {
+    if (isEditMode.value && editingId.value !== null) {
+      const idx = localAlkesList.value.findIndex(i => i.id === editingId.value)
+      if (idx !== -1) {
+        localAlkesList.value[idx] = {
+          ...localAlkesList.value[idx],
+          kode_alat: formData.value.kode_alat,
+          nama_alat: formData.value.nama_alat,
+          nama_alkes: formData.value.nama_alat,
+          kategori: formData.value.kategori,
+          stok: Number(formData.value.stok),
+          status: formData.value.status,
+          lokasi_lab: formData.value.lokasi_lab,
+          deskripsi: formData.value.deskripsi
+        }
+      }
+      toast.add({
+        title: 'Berhasil Diperbarui',
+        description: `Alat ${formData.value.nama_alat} berhasil diperbarui di katalog Anisa Medika.`,
+        color: 'success'
+      })
+    } else {
+      const newItem: AlkesItem = {
+        id: Date.now(),
+        kode_alat: formData.value.kode_alat || `ALK-ANS-${Date.now().toString().slice(-4)}`,
+        nama_alat: formData.value.nama_alat,
+        nama_alkes: formData.value.nama_alat,
+        kategori: formData.value.kategori,
+        stok: Number(formData.value.stok),
+        status: formData.value.status,
+        lokasi_lab: formData.value.lokasi_lab,
+        deskripsi: formData.value.deskripsi,
+        gambar: '/images/alkes/tensimeter.jpg',
+        fallbackGambar: 'https://images.unsplash.com/photo-1584982751601-97dcc096659c?auto=format&fit=crop&w=900&q=80',
+        kemenkes_akl: 'KEMENKES RI AKL TERCATAT',
+        harga_estimasi: 'Hubungi Sales',
+        garansi: '2 Tahun Garansi Resmi'
+      }
+      localAlkesList.value.unshift(newItem)
+      toast.add({
+        title: 'Alat Baru Didaftarkan',
+        description: `${newItem.nama_alat} siap dikelola di inventaris Anisa Medika.`,
+        color: 'success'
+      })
+    }
+    isModalOpen.value = false
+  } finally {
+    isSubmitting.value = false
+  }
+}
+
+const hapusAlat = (item: AlkesItem) => {
+  if (confirm(`Yakin ingin menghapus ${item.nama_alat} dari database Anisa Medika?`)) {
+    localAlkesList.value = localAlkesList.value.filter(i => i.id !== item.id)
+    toast.add({
+      title: 'Alat Dihapus',
+      description: `${item.nama_alat} telah dihapus dari inventaris.`,
+      color: 'neutral'
+    })
+  }
 }
 </script>
 
 <template>
-  <div class="alkes-app">
-    <!-- TOP NAVIGATION: CLEAN & BRIGHT GLASSMORPHIC -->
-    <header class="navbar">
-      <div class="nav-container">
-        <!-- Logo & Branding Alkes UMPKU -->
-        <div class="brand">
-          <div class="logo-box">
-            <span class="logo-icon">🩺</span>
+  <UApp>
+    <div
+      :class="[
+        'min-h-screen flex flex-col font-sans transition-colors duration-300 selection:bg-emerald-500/20 selection:text-emerald-700',
+        isDark ? 'dark bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-800'
+      ]"
+    >
+
+      <!-- ============================================================== -->
+      <!-- ANISA MEDIKA MAIN NAVBAR                                       -->
+      <!-- ============================================================== -->
+      <header class="sticky top-0 z-50 bg-white/95 backdrop-blur-xl border-b border-slate-200/90 shadow-xs transition-colors duration-300">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+          
+          <!-- Brand Logo Anisa Medika (Proporsional & Sejajar) -->
+          <div class="flex items-center gap-2.5 cursor-pointer shrink-0" @click="setView('portal')">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 via-teal-500 to-sky-500 flex items-center justify-center shadow-md shadow-emerald-500/20 ring-1.5 ring-emerald-400/40 shrink-0">
+              <UIcon name="i-lucide-activity" class="w-5 h-5 text-white animate-heart-pulse" />
+            </div>
+            <div class="flex flex-col justify-center">
+              <div class="flex items-center gap-1.5 whitespace-nowrap">
+                <span class="text-base sm:text-lg font-bold tracking-tight text-slate-900 leading-tight">
+                  Anisa <span class="anisa-mint-text font-black">Medika</span>
+                </span>
+                <span class="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-300 leading-none">
+                  ALKES
+                </span>
+              </div>
+              <p class="text-[10px] text-slate-500 font-medium tracking-wide whitespace-nowrap leading-none mt-0.5">
+                Toko Alat Kesehatan Medis Terpercaya
+              </p>
+            </div>
           </div>
-          <div>
-            <div class="brand-tag">Sistem Inventaris & Layanan Alkes</div>
-            <h1 class="brand-name">Portal Alat Kesehatan (ALKES)</h1>
-            <p class="brand-sub">Universitas Muhammadiyah PKU Surakarta • Prodi S1 Informatika</p>
+
+          <!-- Desktop Navigation Menu -->
+          <nav class="hidden lg:flex items-center gap-1">
+            <button
+              type="button"
+              @click="setView('portal')"
+              :class="[
+                'px-4 py-2 rounded-xl text-sm font-semibold transition-all',
+                currentView === 'portal'
+                  ? 'text-emerald-700 bg-emerald-50 border border-emerald-200 shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-emerald-600 hover:bg-slate-100'
+              ]"
+            >
+              Beranda Utama
+            </button>
+
+            <button
+              type="button"
+              @click="setView('portal', 'galeri-alkes')"
+              class="px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:text-emerald-600 hover:bg-slate-100 transition-all flex items-center gap-1.5"
+            >
+              <span>Galeri & Katalog Alkes</span>
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200 font-bold">
+                {{ localAlkesList.length }}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              @click="setView('blog')"
+              :class="[
+                'px-4 py-2 rounded-xl text-sm font-semibold transition-all flex items-center gap-1.5',
+                currentView === 'blog'
+                  ? 'text-emerald-700 bg-emerald-50 border border-emerald-200 shadow-xs font-bold'
+                  : 'text-slate-600 hover:text-emerald-600 hover:bg-slate-100'
+              ]"
+            >
+              <span>Halaman Blog</span>
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            </button>
+
+            <button
+              type="button"
+              @click="setView('portal', 'layanan-anisa')"
+              class="px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:text-emerald-600 hover:bg-slate-100 transition-all"
+            >
+              Layanan & Kalibrasi
+            </button>
+          </nav>
+
+          <!-- Right Action Controls (Dark Mode Toggle & Tombol Mint CTA) -->
+          <div class="flex items-center gap-3">
+            
+            <!-- Tombol Toggle Dark/Light Mode Interaktif -->
+            <button
+              type="button"
+              id="theme-toggle-btn"
+              @click="toggleDarkMode"
+              class="relative p-2.5 rounded-xl border transition-all duration-300 shadow-xs focus:outline-none focus:ring-2 focus:ring-emerald-400 cursor-pointer flex items-center justify-center group"
+              :class="isDark 
+                ? 'border-slate-700 bg-slate-800 text-amber-300 hover:bg-slate-700 hover:text-amber-200' 
+                : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200 hover:text-emerald-600'"
+              :title="isDark ? 'Mode Gelap Aktif (Klik untuk Mode Terang)' : 'Mode Terang Aktif (Klik untuk Mode Gelap)'"
+              aria-label="Toggle Dark Mode"
+            >
+              <div class="relative w-5 h-5 flex items-center justify-center">
+                <UIcon
+                  v-if="isDark"
+                  name="i-lucide-moon"
+                  class="w-5 h-5 text-amber-300 transition-all duration-300 transform group-hover:-rotate-12"
+                />
+                <UIcon
+                  v-else
+                  name="i-lucide-sun"
+                  class="w-5 h-5 text-amber-500 transition-all duration-300 transform group-hover:rotate-45"
+                />
+              </div>
+            </button>
+
+            <!-- Tombol Mint: Minta Penawaran E-Katalog -->
+            <button
+              type="button"
+              class="hidden sm:inline-flex items-center gap-2 px-5 py-2.5 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider"
+              @click="bukaModalPenawaran()"
+            >
+              <UIcon name="i-lucide-file-text" class="w-4 h-4" />
+              <span>Minta Penawaran</span>
+            </button>
+
+            <!-- Mobile Hamburger Toggle -->
+            <button
+              type="button"
+              @click="isMobileMenuOpen = !isMobileMenuOpen"
+              class="lg:hidden p-2.5 rounded-xl text-slate-700 hover:bg-slate-100 cursor-pointer"
+              aria-label="Toggle Mobile Menu"
+            >
+              <UIcon :name="isMobileMenuOpen ? 'i-lucide-x' : 'i-lucide-menu'" class="w-6 h-6" />
+            </button>
+
           </div>
+
         </div>
 
-        <!-- Connection Status Indicator & Sync -->
-        <div class="nav-status">
-          <div class="status-pill" :class="{ 'connected': data && !error, 'disconnected': error, 'loading': pending }">
-            <span class="dot"></span>
-            <span>{{ pending ? 'Menghubungkan...' : error ? 'Mode Lokal: Data Alkes Modul' : 'Terhubung ke Laravel Herd (Alkes API)' }}</span>
+        <!-- Mobile Drawer Navigation -->
+        <div
+          v-if="isMobileMenuOpen"
+          class="lg:hidden px-4 pt-2 pb-6 space-y-2 border-t border-slate-200 bg-white shadow-xl"
+        >
+          <!-- Switch Dark Mode Mobile -->
+          <div class="py-2.5 px-3 mb-2 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-between">
+            <span class="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+              <UIcon :name="isDark ? 'i-lucide-moon' : 'i-lucide-sun'" class="w-4 h-4 text-amber-500" />
+              <span>{{ isDark ? 'Mode Gelap Aktif' : 'Mode Terang Aktif' }}</span>
+            </span>
+            <button
+              type="button"
+              @click="toggleDarkMode"
+              class="px-3 py-1 rounded-lg border text-xs font-bold transition-all"
+              :class="isDark ? 'border-amber-400/40 bg-amber-400/10 text-amber-300' : 'border-slate-300 bg-white text-slate-800'"
+            >
+              {{ isDark ? 'Ganti Mode Terang' : 'Ganti Mode Gelap' }}
+            </button>
           </div>
 
-          <button class="btn btn-sync" :disabled="pending" title="Sinkronkan dengan Database Backend Laravel" @click="refresh()">
-            <svg :class="{ 'spin': pending }" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/>
-            </svg>
-            <span>Sync Laravel</span>
+          <button
+            type="button"
+            @click="setView('portal')"
+            class="w-full text-left px-4 py-2.5 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-100"
+          >
+            Beranda Utama
           </button>
+          <button
+            type="button"
+            @click="setView('portal', 'galeri-alkes')"
+            class="w-full text-left px-4 py-2.5 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-100 flex items-center justify-between"
+          >
+            <span>Galeri & Katalog Alkes</span>
+            <span class="text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-bold">{{ localAlkesList.length }} Unit</span>
+          </button>
+          <button
+            type="button"
+            @click="setView('blog')"
+            class="w-full text-left px-4 py-2.5 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-100"
+          >
+            Halaman Blog Medis
+          </button>
+          <button
+            type="button"
+            @click="setView('portal', 'layanan-anisa')"
+            class="w-full text-left px-4 py-2.5 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-100"
+          >
+            Layanan & Uji Kalibrasi
+          </button>
+          <div class="pt-2">
+            <button
+              type="button"
+              class="w-full py-3 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider text-center"
+              @click="bukaModalPenawaran()"
+            >
+              Minta E-Katalog & Penawaran
+            </button>
+          </div>
         </div>
-      </div>
+      </header>
 
-      <!-- Navigation Tabs (Sesuai Modul Slide 20-21) -->
-      <nav class="nav-tabs-bar">
-        <div class="nav-container tabs-row">
-          <button class="tab-link" :class="{ 'active': activeNav === 'katalog' }" @click="activeNav = 'katalog'">
-            <span class="tab-icon">📦</span> Katalog Alat Kesehatan
-          </button>
-          <button class="tab-link" :class="{ 'active': activeNav === 'pinjam' }" @click="activeNav = 'pinjam'">
-            <span class="tab-icon">📝</span> Formulir Peminjaman Alkes
-          </button>
-          <button class="tab-link" :class="{ 'active': activeNav === 'tracking' }" @click="activeNav = 'tracking'">
-            <span class="tab-icon">🔍</span> Lacak Status Peminjaman
-          </button>
-          <button class="tab-link" :class="{ 'active': activeNav === 'api-info' }" @click="activeNav = 'api-info'">
-            <span class="tab-icon">⚡</span> Konfigurasi Backend Laravel
-          </button>
-        </div>
-      </nav>
-    </header>
+      <!-- ============================================================== -->
+      <!-- VIEW 1: PORTAL ANISA MEDIKA (HERO BANNER, GALERI & LAYANAN)    -->
+      <!-- ============================================================== -->
+      <main v-if="currentView === 'portal'" class="flex-1">
 
-    <!-- MAIN VIEW -->
-    <main class="main-content">
-      <div class="nav-container">
+        <!-- ============================================================ -->
+        <!-- HERO BANNER UTAMA (TEMA TERANG MINT GREEN & SKY BLUE)        -->
+        <!-- ============================================================ -->
+        <section class="relative overflow-hidden anisa-light-banner py-16 sm:py-24 border-b border-emerald-100 shadow-xs">
+          
+          <!-- Background Grid & Glows -->
+          <div class="absolute inset-0 opacity-20 pointer-events-none bg-[radial-gradient(#10b981_1px,transparent_1px)] [background-size:28px_28px]"></div>
+          
+          <div class="absolute -top-32 -left-32 w-96 h-96 bg-emerald-400/10 rounded-full blur-3xl pointer-events-none"></div>
+          <div class="absolute -bottom-32 -right-32 w-96 h-96 bg-sky-400/15 rounded-full blur-3xl pointer-events-none"></div>
+          
+          <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
+              
+              <!-- Kolom Kiri: Copywriting & Value Proposition Anisa Medika -->
+              <div class="lg:col-span-7 space-y-6 text-center lg:text-left">
+                
+                <!-- Pill Badge Kemenkes & Akreditasi -->
+                <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white border border-emerald-200/90 shadow-xs">
+                  <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                  <span class="text-xs sm:text-sm font-semibold tracking-wide text-emerald-800">
+                    Katalog Resmi Kemenkes RI • Standar Akreditasi ISO 13485
+                  </span>
+                </div>
 
-        <!-- RINGKASAN STATISTIK CERAH & BERSIH (Clean Overview Cards) -->
-        <section class="stat-banner">
-          <div class="stat-card stat-blue">
-            <div class="stat-icon-wrapper">
-              <span>🔬</span>
-            </div>
-            <div class="stat-info">
-              <div class="stat-val">{{ rawAlkes.length }}</div>
-              <div class="stat-label">Total Alat Medis</div>
-            </div>
-          </div>
+                <!-- Headline Utama -->
+                <h1 class="text-3xl sm:text-5xl lg:text-5xl font-black tracking-tight leading-tight text-slate-900">
+                  Toko & Distributor Resmi <br class="hidden sm:inline" />
+                  <span class="anisa-mint-text">Alat Kesehatan Medis</span>
+                  Modern Berstandar Rumah Sakit
+                </h1>
 
-          <div class="stat-card stat-emerald">
-            <div class="stat-icon-wrapper">
-              <span>✨</span>
-            </div>
-            <div class="stat-info">
-              <div class="stat-val">{{ totalStok }} Unit</div>
-              <div class="stat-label">Stok Tersedia di Lab</div>
-            </div>
-          </div>
+                <!-- Subtitle -->
+                <p class="text-base sm:text-lg text-slate-600 max-w-2xl mx-auto lg:mx-0 leading-relaxed font-normal">
+                  <strong class="text-emerald-700 font-semibold">Anisa Medika</strong> menghadirkan solusi komprehensif peralatan medis: instrumen diagnostik akurat, patient monitor ICU, Automated External Defibrillator (AED), terapi pernapasan, hingga perlengkapan laboratorium bergaransi resmi untuk faskes di seluruh Indonesia.
+                </p>
 
-          <div class="stat-card stat-violet">
-            <div class="stat-icon-wrapper">
-              <span>📑</span>
-            </div>
-            <div class="stat-info">
-              <div class="stat-val">{{ riwayatPinjam.length }} Data</div>
-              <div class="stat-label">Pengajuan Aktif</div>
-            </div>
-          </div>
+                <!-- Action CTA Buttons (Mint Solid & Sky Outlined) -->
+                <div class="flex flex-wrap items-center justify-center lg:justify-start gap-4 pt-2">
+                  <a
+                    href="#galeri-alkes"
+                    class="inline-flex items-center gap-2.5 px-6 py-3.5 rounded-xl btn-mint text-sm shadow-md"
+                  >
+                    <UIcon name="i-lucide-layout-grid" class="w-4 h-4" />
+                    <span>Jelajahi Galeri Alkes</span>
+                  </a>
 
-          <div class="stat-card stat-amber">
-            <div class="stat-icon-wrapper">
-              <span>🏷️</span>
-            </div>
-            <div class="stat-info">
-              <div class="stat-val">{{ kategoriList.length - 1 }} Kategori</div>
-              <div class="stat-label">Jenis Pelayanan</div>
+                  <button
+                    type="button"
+                    @click="bukaModalPenawaran()"
+                    class="inline-flex items-center gap-2.5 px-6 py-3.5 rounded-xl btn-sky-outline font-semibold text-sm transition-all shadow-xs"
+                  >
+                    <UIcon name="i-lucide-clipboard-check" class="w-4 h-4 text-sky-600" />
+                    <span>Minta E-Katalog & Penawaran</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    @click="setView('blog')"
+                    class="inline-flex items-center gap-2 px-4 py-3.5 rounded-xl text-emerald-700 hover:text-emerald-800 font-semibold text-sm transition-colors"
+                  >
+                    <span>Baca Blog Medis</span>
+                    <UIcon name="i-lucide-arrow-right" class="w-4 h-4 text-emerald-600" />
+                  </button>
+                </div>
+
+                <!-- Trust Statistics Anisa Medika (4 Metric Counters Terang & Jelas) -->
+                <div class="pt-8 grid grid-cols-2 sm:grid-cols-4 gap-4 border-t border-slate-200">
+                  <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-xs">
+                    <div class="text-2xl sm:text-3xl font-extrabold text-slate-900">15.000+</div>
+                    <div class="text-xs text-slate-500 font-medium mt-0.5">Unit Terdistribusi</div>
+                  </div>
+                  <div class="p-3.5 rounded-xl bg-white border border-emerald-200 shadow-xs">
+                    <div class="text-2xl sm:text-3xl font-extrabold text-emerald-600">99.9%</div>
+                    <div class="text-xs text-slate-500 font-medium mt-0.5">Akurasi Kalibrasi</div>
+                  </div>
+                  <div class="p-3.5 rounded-xl bg-white border border-slate-200 shadow-xs">
+                    <div class="text-2xl sm:text-3xl font-extrabold text-slate-900">450+</div>
+                    <div class="text-xs text-slate-500 font-medium mt-0.5">Mitra Rumah Sakit</div>
+                  </div>
+                  <div class="p-3.5 rounded-xl bg-white border border-sky-200 shadow-xs">
+                    <div class="text-2xl sm:text-3xl font-extrabold text-sky-600">24/7</div>
+                    <div class="text-xs text-slate-500 font-medium mt-0.5">Siaga Teknisi BPFK</div>
+                  </div>
+                </div>
+
+              </div>
+
+              <!-- Kolom Kanan: Showcase Visual Kartu Alkes dengan Floating Badges -->
+              <div class="lg:col-span-5 relative">
+                
+                <!-- Card Showcase Utama -->
+                <div class="relative rounded-2xl overflow-hidden border-2 border-emerald-200 shadow-xl bg-white group">
+                  <img
+                    src="/images/anisa-medika-hero.jpg"
+                    alt="Peralatan Medis Anisa Medika Showcase"
+                    class="w-full h-80 sm:h-96 object-cover object-center group-hover:scale-105 transition-transform duration-700"
+                    @error="(e) => handleImgError(e, 'https://images.unsplash.com/photo-1516549655169-df83a0774514?auto=format&fit=crop&w=900&q=80')"
+                  />
+                  <div class="absolute inset-0 bg-gradient-to-t from-slate-900/80 via-transparent to-transparent"></div>
+
+                  <!-- Overlay Keterangan Gambar -->
+                  <div class="absolute bottom-4 left-4 right-4 p-4 rounded-xl bg-white/95 backdrop-blur-md border border-slate-200 shadow-md">
+                    <div class="flex items-center justify-between mb-1">
+                      <span class="text-xs font-bold text-emerald-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                        Laboratorium Kalibrasi & Diagnostik
+                      </span>
+                      <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300">
+                        Grade A
+                      </span>
+                    </div>
+                    <p class="text-xs text-slate-700 font-medium">
+                      Showcase Anisa Medika: Patient Monitor ICU, Precision ECG, Defibrillator AED & Stetoskop Kardiologi
+                    </p>
+                  </div>
+                </div>
+
+                <!-- Floating Badge 1: Detak Jantung / Vitals -->
+                <div class="absolute -top-6 -left-6 hidden sm:flex items-center gap-3 p-3.5 rounded-xl bg-white border border-slate-200 shadow-lg backdrop-blur-md animate-float">
+                  <div class="w-10 h-10 rounded-lg bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-500">
+                    <UIcon name="i-lucide-heart-pulse" class="w-5 h-5 animate-heart-pulse" />
+                  </div>
+                  <div>
+                    <div class="text-[11px] text-slate-500 font-medium">Live Vitals Monitoring</div>
+                    <div class="text-sm font-extrabold text-slate-900">HR 72 BPM | SpO2 98%</div>
+                  </div>
+                </div>
+
+                <!-- Floating Badge 2: Sertifikat Kalibrasi Resmi -->
+                <div class="absolute -bottom-6 -right-4 hidden sm:flex items-center gap-3 p-3.5 rounded-xl bg-white border border-emerald-200 shadow-lg backdrop-blur-md">
+                  <div class="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
+                    <UIcon name="i-lucide-shield-check" class="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div class="text-[11px] text-slate-500 font-medium">Jaminan Akurasi</div>
+                    <div class="text-sm font-extrabold text-emerald-700">Tersertifikasi BPFK</div>
+                  </div>
+                </div>
+
+              </div>
+
             </div>
           </div>
         </section>
 
-        <!-- ============================================== -->
-        <!-- TAB 1: KATALOG & PENCARIAN ALKES (SLIDE 16-18) -->
-        <!-- ============================================== -->
-        <section v-if="activeNav === 'katalog'" class="tab-section">
-          <!-- Filter & Search Toolbar: Clean & Minimalist -->
-          <div class="catalog-toolbar">
-            <div class="toolbar-search">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                <circle cx="11" cy="11" r="8"></circle>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-              </svg>
-              <!-- Input Pencarian (Slide 16-17) -->
-              <input 
-                id="cari"
-                v-model="kataKunci" 
-                type="search" 
-                placeholder="Cari nama alat kesehatan (contoh: tensi, stetoskop, oksimeter, nebulizer)..." 
-              />
-              <button v-if="kataKunci" class="clear-icon" title="Hapus pencarian" @click="kataKunci = ''">✕</button>
+        <!-- ============================================================ -->
+        <!-- 3 KARTU FITUR UNGGULAN (BERSIH & LAPANG)                     -->
+        <!-- ============================================================ -->
+        <section class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-10 relative z-20">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            
+            <div class="p-6 rounded-2xl bg-white border border-slate-200 shadow-sm hover:shadow-md hover:border-emerald-300 transition-all duration-300">
+              <div class="w-12 h-12 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center mb-4">
+                <UIcon name="i-lucide-truck" class="w-6 h-6" />
+              </div>
+              <h3 class="text-lg font-bold text-slate-900">Distribusi Cepat & Steril</h3>
+              <p class="text-sm text-slate-600 mt-2 leading-relaxed">
+                Pengiriman perlengkapan medis ke faskes seluruh Indonesia dengan penanganan sterilisasi berstandar Cara Distribusi Alat Kesehatan yang Baik (CDAKB).
+              </p>
             </div>
 
-            <!-- Kategori Chips Filter -->
-            <div class="kategori-chips-wrapper">
-              <span class="chips-title">Kategori:</span>
-              <div class="kategori-chips">
-                <button 
-                  v-for="kat in kategoriList" 
-                  :key="kat" 
-                  class="chip-btn" 
-                  :class="{ 'chip-active': kategoriFilter === kat }"
-                  @click="kategoriFilter = kat"
-                >
-                  {{ kat }}
-                </button>
+            <div class="p-6 rounded-2xl bg-white border border-slate-200 shadow-sm hover:shadow-md hover:border-sky-300 transition-all duration-300">
+              <div class="w-12 h-12 rounded-xl bg-sky-50 border border-sky-200 text-sky-600 flex items-center justify-center mb-4">
+                <UIcon name="i-lucide-award" class="w-6 h-6" />
+              </div>
+              <h3 class="text-lg font-bold text-slate-900">Uji Kalibrasi Berkala BPFK</h3>
+              <p class="text-sm text-slate-600 mt-2 leading-relaxed">
+                Setiap alat elektromedis dikalibrasi langsung oleh tenaga elektromedis bersertifikasi Kemenkes RI demi ketepatan diagnosis 99.9%.
+              </p>
+            </div>
+
+            <div class="p-6 rounded-2xl bg-white border border-slate-200 shadow-sm hover:shadow-md hover:border-teal-300 transition-all duration-300">
+              <div class="w-12 h-12 rounded-xl bg-teal-50 border border-teal-200 text-teal-600 flex items-center justify-center mb-4">
+                <UIcon name="i-lucide-headset" class="w-6 h-6" />
+              </div>
+              <h3 class="text-lg font-bold text-slate-900">Garansi & Training Nakes</h3>
+              <p class="text-sm text-slate-600 mt-2 leading-relaxed">
+                Dukungan purna jual 24/7, spare part original resmi, serta program bimbingan teknis operasional langsung bagi dokter, perawat, dan staf klinik.
+              </p>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ============================================================ -->
+        <!-- GRID GALERI / KATALOG PRODUK ALKES DI BAWAH BANNER UTAMA     -->
+        <!-- ============================================================ -->
+        <section id="galeri-alkes" class="py-16 sm:py-24 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          
+          <!-- Section Title & Header -->
+          <div class="text-center max-w-3xl mx-auto space-y-3 mb-10">
+            <div class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-emerald-50 text-emerald-700 text-xs font-bold uppercase tracking-wider border border-emerald-200">
+              <UIcon name="i-lucide-sparkles" class="w-3.5 h-3.5 text-emerald-600" />
+              <span>Katalog & Showcase Visual Alkes Anisa Medika</span>
+            </div>
+            <h2 class="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
+              Galeri Koleksi Peralatan Medis Terunggul
+            </h2>
+            <p class="text-sm sm:text-base text-slate-600 leading-relaxed">
+              Jelajahi portofolio instrumen medis berstandar Kemenkes RI. Klik pada setiap alat untuk meninjau foto produk, lembar spesifikasi teknis, harga estimasi, serta penawaran resmi.
+            </p>
+          </div>
+
+          <!-- Filter Kategori & Pencarian Galeri -->
+          <div class="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs mb-8 flex flex-col md:flex-row gap-4 items-stretch md:items-center justify-between">
+            
+            <!-- Category Tabs -->
+            <div class="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
+              <button
+                v-for="cat in galleryCategories"
+                :key="cat"
+                type="button"
+                @click="galleryCategory = cat"
+                :class="[
+                  'px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold whitespace-nowrap transition-all duration-200',
+                  galleryCategory === cat
+                    ? 'btn-mint shadow-xs'
+                    : 'text-slate-600 hover:text-emerald-600 hover:bg-slate-100'
+                ]"
+              >
+                {{ cat }}
+              </button>
+            </div>
+
+            <!-- Search & Sort Controls -->
+            <div class="flex items-center gap-3 shrink-0">
+              <div class="relative w-full sm:w-64">
+                <UInput
+                  v-model="gallerySearch"
+                  icon="i-lucide-search"
+                  placeholder="Cari alat, kode, atau merk..."
+                  size="sm"
+                  class="w-full"
+                />
+              </div>
+
+              <div class="w-36">
+                <USelect
+                  v-model="gallerySort"
+                  :items="[
+                    { label: 'Rekomendasi', value: 'default' },
+                    { label: 'Nama (A - Z)', value: 'name' },
+                    { label: 'Stok Terbanyak', value: 'stock' },
+                    { label: 'Harga Tertinggi', value: 'price' }
+                  ]"
+                  size="sm"
+                />
               </div>
             </div>
 
-            <!-- Search Counter (Slide 18) -->
-            <div class="toolbar-meta">
-              <span class="meta-count">
-                Menampilkan <strong>{{ listAlkes.length }}</strong> dari total {{ rawAlkes.length }} Alat Kesehatan
-              </span>
-              <span v-if="kataKunci" class="search-hint">Filter aktif: "{{ kataKunci.trim() }}"</span>
+          </div>
+
+          <!-- GRID DISPLAY GALERI (12 ALAT KESEHATAN LENGKAP) -->
+          <div v-if="filteredGalleryList.length > 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            
+            <div
+              v-for="alat in filteredGalleryList"
+              :key="alat.id"
+              class="group bg-white rounded-2xl overflow-hidden border border-slate-200 shadow-sm hover:shadow-xl hover:border-emerald-400 transition-all duration-300 flex flex-col"
+            >
+              <!-- Container Gambar Alkes dengan Hover Zoom & Safe Fallback -->
+              <div class="relative h-56 bg-slate-100 overflow-hidden cursor-pointer" @click="bukaDetailAlat(alat)">
+                <img
+                  :src="alat.gambar || alat.fallbackGambar"
+                  :alt="alat.nama_alat"
+                  class="w-full h-full object-cover object-center group-hover:scale-108 transition-transform duration-500"
+                  loading="lazy"
+                  @error="(e) => handleImgError(e, alat.fallbackGambar)"
+                />
+                
+                <!-- Badge Izin Edar Kemenkes -->
+                <div class="absolute top-3 left-3">
+                  <span class="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-md bg-white/95 text-sky-700 border border-sky-200 backdrop-blur-md shadow-xs">
+                    <UIcon name="i-lucide-badge-check" class="w-3 h-3 text-sky-600" />
+                    {{ alat.kemenkes_akl?.split(' ')[2] || 'Kemenkes RI' }}
+                  </span>
+                </div>
+
+                <!-- Status Stok Badge -->
+                <div class="absolute top-3 right-3">
+                  <span
+                    :class="[
+                      'text-[10px] font-bold px-2.5 py-1 rounded-md backdrop-blur-md shadow-xs',
+                      alat.status === 'Tersedia'
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
+                        : (alat.status === 'Stok Terbatas' ? 'bg-amber-50 text-amber-700 border border-amber-300' : 'bg-slate-100 text-slate-700 border border-slate-300')
+                    ]"
+                  >
+                    {{ alat.status }}
+                  </span>
+                </div>
+
+                <!-- Overlay Tombol Zoom Cepat -->
+                <div class="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    class="px-4 py-2 rounded-xl btn-mint text-xs font-bold shadow-lg flex items-center gap-1.5"
+                  >
+                    <UIcon name="i-lucide-maximize-2" class="w-3.5 h-3.5" />
+                    <span>Lihat Spek Lengkap</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Content Card -->
+              <div class="p-5 flex-1 flex flex-col justify-between space-y-4">
+                
+                <div>
+                  <!-- Kategori & Kode Alat -->
+                  <div class="flex items-center justify-between text-xs text-slate-500 mb-1.5">
+                    <span class="font-semibold text-emerald-700">{{ alat.kategori }}</span>
+                    <span class="font-mono text-[11px] font-semibold bg-slate-100 px-1.5 py-0.5 rounded text-slate-700 border border-slate-200">
+                      {{ alat.kode_alat }}
+                    </span>
+                  </div>
+
+                  <!-- Judul Nama Alat -->
+                  <h3
+                    class="font-bold text-slate-900 text-base line-clamp-2 group-hover:text-emerald-700 transition-colors cursor-pointer"
+                    @click="bukaDetailAlat(alat)"
+                  >
+                    {{ alat.nama_alat }}
+                  </h3>
+
+                  <!-- Snippet Deskripsi -->
+                  <p class="text-xs text-slate-500 line-clamp-2 mt-2 leading-relaxed">
+                    {{ alat.deskripsi }}
+                  </p>
+                </div>
+
+                <!-- Estimasi Harga Resmi & Tombol Pesan -->
+                <div class="pt-3 border-t border-slate-100 flex items-center justify-between">
+                  <div>
+                    <div class="text-[10px] text-slate-400 font-medium">Estimasi Harga</div>
+                    <div class="text-xs font-black text-emerald-700">
+                      {{ alat.harga_estimasi || 'Hubungi Sales' }}
+                    </div>
+                  </div>
+
+                  <div class="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      class="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-emerald-700 hover:border-emerald-300 text-xs font-semibold flex items-center gap-1 transition-all"
+                      @click="bukaDetailAlat(alat)"
+                      title="Lihat Lembar Spesifikasi"
+                    >
+                      <UIcon name="i-lucide-eye" class="w-3.5 h-3.5 text-slate-500" />
+                      <span>Detail</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="px-3 py-1.5 rounded-lg btn-mint text-xs font-bold flex items-center gap-1"
+                      @click="bukaModalPenawaran(alat.nama_alat)"
+                      title="Minta Penawaran Cepat"
+                    >
+                      <UIcon name="i-lucide-message-circle" class="w-3.5 h-3.5" />
+                      <span>Pesan</span>
+                    </button>
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+          <!-- Empty State Galeri -->
+          <div v-else class="py-16 text-center bg-white rounded-2xl border border-slate-200 p-8">
+            <div class="w-16 h-16 rounded-full bg-emerald-50 flex items-center justify-center mx-auto text-emerald-600 mb-4 border border-emerald-200">
+              <UIcon name="i-lucide-search" class="w-8 h-8" />
+            </div>
+            <h3 class="text-lg font-bold text-slate-900">Tidak ada alat kesehatan ditemukan</h3>
+            <p class="text-xs sm:text-sm text-slate-500 max-w-md mx-auto mt-1">
+              Silakan coba kata kunci lain atau pilih kategori "Semua" untuk melihat katalog lengkap Anisa Medika.
+            </p>
+            <div class="mt-4">
+              <button
+                type="button"
+                @click="galleryCategory = 'Semua'; gallerySearch = ''"
+                class="px-4 py-2 rounded-xl btn-mint text-xs font-bold"
+              >
+                Reset Filter Pencarian
+              </button>
             </div>
           </div>
 
-          <!-- KONDISI ANTARMUKA (SLIDE 22) -->
-          <!-- 1. Kondisi Memuat -->
-          <div v-if="pending && !data" class="state-loading">
-            <div class="spinner-circle"></div>
-            <p>Mengambil data inventaris Alkes dari Laravel API...</p>
-          </div>
+        </section>
 
-          <!-- 2. Kondisi Kosong (Slide 17 & 22) -->
-          <div v-else-if="listAlkes.length === 0" class="state-empty">
-            <div class="empty-emoji">🔍</div>
-            <h3>Alat Kesehatan Tidak Ditemukan</h3>
-            <p>Tidak ada alat kesehatan yang cocok dengan pencarian <strong>"{{ kataKunci }}"</strong>. Coba periksa kata kunci atau reset filter kategori.</p>
-            <button class="btn btn-primary" @click="kataKunci = ''; kategoriFilter = 'Semua'">Reset Pencarian</button>
-          </div>
+        <!-- ============================================================ -->
+        <!-- BANNER LAYANAN & UJI KALIBRASI BPFK ANISA MEDIKA             -->
+        <!-- ============================================================ -->
+        <section id="layanan-anisa" class="py-16 sm:py-20 bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 dark:from-slate-900 dark:via-slate-900/95 dark:to-slate-950 border-t border-b border-emerald-100 dark:border-slate-800 text-slate-900 dark:text-slate-100 relative overflow-hidden transition-colors duration-300">
+          <div class="absolute -top-24 right-0 w-80 h-80 bg-emerald-400/10 rounded-full blur-3xl pointer-events-none"></div>
 
-          <!-- 3. Kondisi Berhasil: Grid Kartu Alkes Yang Segar & Cerah (Slide 18) -->
-          <div v-else class="alkes-grid">
-            <article v-for="item in listAlkes" :key="item.id" class="alkes-card">
-              <!-- Header Kartu -->
-              <div class="card-head">
-                <div class="card-avatar">
-                  {{ getAlkesIcon(item.nama_alkes, item.kategori) }}
+          <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+              
+              <div class="lg:col-span-8 space-y-4">
+                <span class="text-xs font-bold tracking-widest text-emerald-700 uppercase">
+                  Layanan Resmi Kalibrasi & Pemeliharaan Faskes
+                </span>
+                <h2 class="text-2xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
+                  Menjaga Standar Keselamatan Pasien & Akreditasi Rumah Sakit
+                </h2>
+                <p class="text-sm sm:text-base text-slate-600 leading-relaxed max-w-2xl">
+                  Anisa Medika melayani pengujian dan kalibrasi tahunan bersertifikat resmi, uji keselamatan listrik (electrical safety testing), serta kontrak servis berkala untuk rumah sakit, puskesmas, klinik, dan laboratorium medis di seluruh Indonesia.
+                </p>
+                <div class="pt-2 flex flex-wrap gap-4 text-xs font-semibold text-emerald-800">
+                  <div class="flex items-center gap-1.5">
+                    <UIcon name="i-lucide-check-circle" class="w-4 h-4 text-emerald-600" />
+                    <span>Lulus Uji BPFK Kemenkes</span>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <UIcon name="i-lucide-check-circle" class="w-4 h-4 text-emerald-600" />
+                    <span>Stiker Laik Pakai Resmi</span>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <UIcon name="i-lucide-check-circle" class="w-4 h-4 text-emerald-600" />
+                    <span>Dukungan Suku Cadang Original</span>
+                  </div>
                 </div>
-                <div class="card-badges">
-                  <span class="code-badge">{{ item.kode_alat }}</span>
-                  <span class="status-badge" :class="{ 'status-ready': item.kondisi.includes('Tersedia'), 'status-warn': !item.kondisi.includes('Tersedia') }">
-                    <span class="badge-dot"></span>
-                    {{ item.kondisi }}
+              </div>
+
+              <div class="lg:col-span-4 flex flex-col sm:flex-row lg:flex-col gap-3 justify-center">
+                <button
+                  type="button"
+                  class="py-3.5 px-6 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2"
+                  @click="bukaModalPenawaran('Jadwal Kalibrasi & Servis')"
+                >
+                  <UIcon name="i-lucide-calendar" class="w-4 h-4" />
+                  <span>Jadwalkan Kalibrasi Alat</span>
+                </button>
+                <button
+                  type="button"
+                  class="py-3.5 px-6 rounded-xl btn-sky-outline text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2"
+                  @click="setView('blog')"
+                >
+                  <UIcon name="i-lucide-file-text" class="w-4 h-4" />
+                  <span>Pelajari Regulasi Medis</span>
+                </button>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+      </main>
+
+      <!-- ============================================================== -->
+      <!-- VIEW 2: HALAMAN BLOG ALKES & WADAH EDUKASI KESEHATAN           -->
+      <!-- ============================================================== -->
+      <main v-else-if="currentView === 'blog'" class="flex-1 py-12 sm:py-16 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        
+        <!-- Header Blog Anisa Medika -->
+        <div class="text-center max-w-3xl mx-auto space-y-4 mb-12">
+          <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-bold uppercase tracking-wider border border-emerald-200">
+            <UIcon name="i-lucide-book-open" class="w-4 h-4 text-emerald-600" />
+            <span>Pusat Edukasi & Jurnal Alkes Anisa Medika</span>
+          </div>
+          
+          <h1 class="text-3xl sm:text-5xl font-black tracking-tight text-slate-900">
+            Wawasan & Regulasi <br class="hidden sm:inline" />
+            <span class="anisa-mint-text">Teknologi Alat Kesehatan</span>
+          </h1>
+
+          <p class="text-base text-slate-600 leading-relaxed">
+            Artikel ilmiah populer, panduan kepatuhan BPFK, standar operasional kamar operasi, serta perkembangan teknologi biomedis teranyar untuk faskes dan nakes Indonesia.
+          </p>
+        </div>
+
+        <!-- Filter & Search Bar Blog -->
+        <div class="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs mb-10 flex flex-col sm:flex-row gap-4 items-stretch sm:items-center justify-between">
+          
+          <div class="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
+            <button
+              v-for="cat in blogCategories"
+              :key="cat"
+              type="button"
+              @click="blogCategory = cat"
+              :class="[
+                'px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold whitespace-nowrap transition-all',
+                blogCategory === cat
+                  ? 'btn-mint shadow-xs'
+                  : 'text-slate-600 hover:text-emerald-600 hover:bg-slate-100'
+              ]"
+            >
+              {{ cat }}
+            </button>
+          </div>
+
+          <div class="w-full sm:w-72">
+            <UInput
+              v-model="blogSearch"
+              icon="i-lucide-search"
+              placeholder="Cari artikel, topik, penulis..."
+              size="sm"
+              class="w-full"
+            />
+          </div>
+
+        </div>
+
+        <!-- Grid Artikel Blog -->
+        <div v-if="filteredBlogList.length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+          
+          <article
+            v-for="art in filteredBlogList"
+            :key="art.id"
+            class="bg-white rounded-2xl overflow-hidden border border-slate-200 shadow-sm hover:shadow-xl hover:border-emerald-300 transition-all duration-300 flex flex-col group cursor-pointer"
+            @click="bukaArtikel(art)"
+          >
+            <!-- Thumbnail Gambar Artikel (Proporsional & Utuh) -->
+            <div class="relative h-56 sm:h-64 overflow-hidden bg-slate-100/90 dark:bg-slate-800/80 flex items-center justify-center p-3 border-b border-slate-100 dark:border-slate-800">
+              <!-- Ambient background blur effect -->
+              <img
+                :src="art.gambar || art.fallbackGambar"
+                :alt="art.judul"
+                aria-hidden="true"
+                class="absolute inset-0 w-full h-full object-cover filter blur-md opacity-25 scale-110 pointer-events-none select-none"
+              />
+              <!-- Main Thumbnail Image with object-contain to display full image without zoom or cropping -->
+              <img
+                :src="art.gambar || art.fallbackGambar"
+                :alt="art.judul"
+                class="relative max-h-full max-w-full w-auto h-auto object-contain object-center rounded-lg shadow-2xs group-hover:scale-[1.03] transition-transform duration-300 z-10"
+                loading="lazy"
+                @error="(e) => handleImgError(e, art.fallbackGambar)"
+              />
+              <div class="absolute top-3 left-3 z-20">
+                <span class="text-[10px] font-bold px-2.5 py-1 rounded-md bg-white/95 dark:bg-slate-900/90 text-emerald-800 dark:text-emerald-300 border border-emerald-200/90 dark:border-emerald-700/60 shadow-xs backdrop-blur-xs">
+                  {{ art.kategori }}
+                </span>
+              </div>
+              <div class="absolute bottom-3 right-3 z-20 text-[11px] font-semibold px-2 py-0.5 rounded-md bg-white/90 dark:bg-slate-900/90 text-slate-700 dark:text-slate-300 backdrop-blur-md border border-slate-200/80 dark:border-slate-700/60 shadow-xs">
+                {{ art.waktuBaca }}
+              </div>
+            </div>
+
+            <!-- Konten Artikel -->
+            <div class="p-6 flex-1 flex flex-col justify-between space-y-4">
+              
+              <div class="space-y-3">
+                <div class="flex items-center gap-2 text-xs text-slate-500">
+                  <UIcon name="i-lucide-calendar" class="w-3.5 h-3.5 text-emerald-600" />
+                  <span>{{ art.tanggal }}</span>
+                </div>
+
+                <h3 class="text-lg font-bold text-slate-900 group-hover:text-emerald-700 transition-colors leading-snug line-clamp-2">
+                  {{ art.judul }}
+                </h3>
+
+                <p class="text-xs sm:text-sm text-slate-500 line-clamp-3 leading-relaxed">
+                  {{ art.ringkasan }}
+                </p>
+              </div>
+
+              <!-- Author Info & Read Action -->
+              <div class="pt-4 border-t border-slate-100 flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                  <UAvatar
+                    :src="art.penulis.avatar"
+                    :alt="art.penulis.nama"
+                    size="sm"
+                    class="ring-1 ring-emerald-400"
+                  />
+                  <div class="min-w-0">
+                    <p class="text-xs font-semibold text-slate-800 truncate">{{ art.penulis.nama }}</p>
+                    <p class="text-[10px] text-slate-500 truncate">{{ art.penulis.gelar }}</p>
+                  </div>
+                </div>
+
+                <span class="text-emerald-600 text-xs font-bold flex items-center gap-1 group-hover:translate-x-1 transition-transform">
+                  Baca
+                  <UIcon name="i-lucide-chevron-right" class="w-3.5 h-3.5" />
+                </span>
+              </div>
+
+            </div>
+          </article>
+
+        </div>
+
+        <!-- Empty State Blog -->
+        <div v-else class="py-16 text-center bg-white rounded-2xl border border-slate-200 p-8">
+          <div class="w-16 h-16 rounded-full bg-emerald-50 flex items-center justify-center mx-auto text-emerald-600 mb-4 border border-emerald-200">
+            <UIcon name="i-lucide-file-question" class="w-8 h-8" />
+          </div>
+          <h3 class="text-lg font-bold text-slate-900">Tidak ada artikel blog ditemukan</h3>
+          <p class="text-xs sm:text-sm text-slate-500 max-w-md mx-auto mt-1">
+            Coba gunakan kata kunci artikel yang berbeda atau klik tombol reset di bawah.
+          </p>
+          <div class="mt-4">
+            <button
+              type="button"
+              @click="blogCategory = 'Semua'; blogSearch = ''"
+              class="px-4 py-2 rounded-xl btn-mint text-xs font-bold"
+            >
+              Reset Filter Blog
+            </button>
+          </div>
+        </div>
+
+      </main>
+
+      <!-- ============================================================== -->
+      <!-- VIEW 3: SISTEM INVENTARIS & DATABASE ALKES (AREA ADMIN EKSKLUSIF)-->
+      <!-- ============================================================== -->
+      <main v-else-if="currentView === 'inventaris'" class="flex-1 py-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+        
+        <!-- Banner Mode Khusus Admin Backend -->
+        <div class="bg-gradient-to-r from-amber-500/10 via-amber-50 to-emerald-50 dark:from-amber-950/40 dark:via-slate-900 dark:to-emerald-950/30 border border-amber-300 dark:border-amber-800/60 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-sm shadow-amber-500/20">
+              <UIcon name="i-lucide-shield-check" class="w-6 h-6" />
+            </div>
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-bold uppercase tracking-wider text-amber-900 dark:text-amber-300">Area Backend Eksklusif</span>
+                <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700 font-bold">
+                  Sesi Admin Aktif
+                </span>
+              </div>
+              <p class="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                Fitur tambah, edit, dan hapus stok alkes di halaman ini hanya dapat diakses oleh administrator internal Anisa Medika.
+              </p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+            <button
+              type="button"
+              @click="setView('portal')"
+              class="flex-1 sm:flex-none px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs"
+            >
+              <UIcon name="i-lucide-eye" class="w-4 h-4 text-emerald-600" />
+              <span>Lihat Frontend Publik</span>
+            </button>
+            <button
+              type="button"
+              @click="logoutAdmin"
+              class="flex-1 sm:flex-none px-3.5 py-2 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100 text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs"
+            >
+              <UIcon name="i-lucide-log-out" class="w-4 h-4" />
+              <span>Kunci & Keluar</span>
+            </button>
+          </div>
+        </div>
+        
+        <!-- Header Manajemen Inventaris -->
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-6">
+          <div>
+            <div class="flex items-center gap-2">
+              <h1 class="text-2xl sm:text-3xl font-black text-slate-900">
+                Database Inventaris Alkes Anisa Medika
+              </h1>
+              <UBadge :color="isConnectedToApi ? 'success' : 'neutral'" variant="subtle" size="sm">
+                {{ isConnectedToApi ? 'Terkoneksi API' : 'Mode Mandiri' }}
+              </UBadge>
+            </div>
+            <p class="text-xs sm:text-sm text-slate-500 mt-1">
+              Sistem pencatatan logistik, spesifikasi, dan pemantauan ketersediaan unit alat medis di laboratorium.
+            </p>
+          </div>
+
+          <div class="flex items-center gap-2.5">
+            <button
+              type="button"
+              class="px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 hover:text-emerald-700 hover:border-emerald-300 text-xs font-semibold flex items-center gap-1.5 shadow-xs"
+              @click="refreshData"
+              title="Perbarui Sinkronisasi Data"
+            >
+              <UIcon name="i-lucide-refresh-cw" :class="['w-4 h-4', isLoadingApi ? 'animate-spin' : '']" />
+              <span>Sinkron</span>
+            </button>
+
+            <button
+              type="button"
+              class="px-4 py-2 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider flex items-center gap-1.5"
+              @click="bukaModalTambah"
+            >
+              <UIcon name="i-lucide-plus" class="w-4 h-4" />
+              <span>Daftarkan Alat Baru</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 4 Metric Cards Inventaris -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div class="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs">
+            <span class="text-xs font-medium text-slate-500">Total Macam Alat</span>
+            <div class="text-2xl font-black text-slate-900 mt-1">{{ totalAlkesCount }} Model</div>
+          </div>
+          <div class="p-5 rounded-2xl bg-white border border-emerald-100 shadow-xs">
+            <span class="text-xs font-medium text-slate-500">Total Stok Fisik</span>
+            <div class="text-2xl font-black text-emerald-600 mt-1">{{ totalStokUnit }} Unit</div>
+          </div>
+          <div class="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs">
+            <span class="text-xs font-medium text-slate-500">Alat Tersedia (Ready)</span>
+            <div class="text-2xl font-black text-sky-600 mt-1">{{ totalTersedia }} Item</div>
+          </div>
+          <div class="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs">
+            <span class="text-xs font-medium text-slate-500">Sedang Dipakai / Servis</span>
+            <div class="text-2xl font-black text-rose-500 mt-1">{{ totalDipakai + totalRusak }} Item</div>
+          </div>
+        </div>
+
+        <!-- Filter & Search Toolbar Tabel -->
+        <div class="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex flex-col sm:flex-row gap-4 items-center justify-between">
+          <div class="w-full sm:w-80">
+            <UInput
+              v-model="searchQuery"
+              icon="i-lucide-search"
+              placeholder="Cari kode, nama, lokasi..."
+              size="sm"
+              class="w-full"
+            />
+          </div>
+
+          <div class="flex items-center gap-3 w-full sm:w-auto">
+            <USelect
+              v-model="selectedKategori"
+              :items="kategoriOptions"
+              size="sm"
+              class="w-44"
+            />
+            <USelect
+              v-model="selectedStatus"
+              :items="statusOptions"
+              size="sm"
+              class="w-36"
+            />
+          </div>
+        </div>
+
+        <!-- Tabel Data Inventaris -->
+        <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+          <UTable
+            :data="filteredAlkes"
+            :columns="tableColumns"
+            class="w-full"
+          >
+            <template #kode_alat-cell="{ row }">
+              <span class="font-mono text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
+                {{ row.original.kode_alat }}
+              </span>
+            </template>
+
+            <template #nama_alat-cell="{ row }">
+              <div>
+                <div class="font-bold text-slate-900 text-sm hover:text-emerald-700 cursor-pointer" @click="bukaDetailAlat(row.original)">
+                  {{ row.original.nama_alat }}
+                </div>
+                <div class="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
+                  <UIcon name="i-lucide-map-pin" class="w-3 h-3 text-emerald-600" />
+                  <span>{{ row.original.lokasi_lab || 'Laboratorium Anisa Medika' }}</span>
+                </div>
+              </div>
+            </template>
+
+            <template #kategori-cell="{ row }">
+              <span class="text-xs text-slate-700 font-medium">
+                {{ row.original.kategori }}
+              </span>
+            </template>
+
+            <template #stok-cell="{ row }">
+              <span class="text-xs font-bold text-slate-900">
+                {{ row.original.stok }} Unit
+              </span>
+            </template>
+
+            <template #status-cell="{ row }">
+              <span
+                :class="[
+                  'text-[10px] font-bold px-2 py-0.5 rounded',
+                  row.original.status === 'Tersedia'
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    : 'bg-amber-50 text-amber-700 border border-amber-200'
+                ]"
+              >
+                {{ row.original.status }}
+              </span>
+            </template>
+
+            <template #actions-cell="{ row }">
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  class="p-1.5 rounded-lg text-slate-500 hover:text-emerald-700 hover:bg-slate-100"
+                  @click="bukaModalEdit(row.original)"
+                  title="Edit Alat"
+                >
+                  <UIcon name="i-lucide-pencil" class="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  class="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50"
+                  @click="hapusAlat(row.original)"
+                  title="Hapus Alat"
+                >
+                  <UIcon name="i-lucide-trash-2" class="w-4 h-4" />
+                </button>
+              </div>
+            </template>
+          </UTable>
+
+          <div class="px-6 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500">
+            <span>Menampilkan {{ filteredAlkes.length }} dari {{ localAlkesList.length }} instrumen</span>
+            <span class="text-emerald-700 font-mono font-semibold">SIM-ALKES Anisa Medika v3.2</span>
+          </div>
+        </div>
+
+      </main>
+
+      <!-- ============================================================== -->
+      <!-- FOOTER RINGKAS & ELEGAN (TEMA TERANG MINT & BIRU)              -->
+      <!-- ============================================================== -->
+      <footer class="bg-white text-slate-600 text-sm mt-auto border-t border-slate-200 shadow-xs">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+          
+          <div class="flex flex-col md:flex-row items-center justify-between gap-8 pb-10 border-b border-slate-200">
+            
+            <!-- Logo Singkat Anisa Medika & Deskripsi 1 Kalimat -->
+            <div class="space-y-3 text-center md:text-left max-w-md">
+              <div class="flex items-center justify-center md:justify-start gap-2.5">
+                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500 via-teal-500 to-sky-500 flex items-center justify-center text-white shadow-sm">
+                  <UIcon name="i-lucide-activity" class="w-5 h-5" />
+                </div>
+                <span class="text-lg font-bold text-slate-900 tracking-tight">
+                  Anisa <span class="anisa-mint-text font-black">Medika</span>
+                </span>
+                <span class="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-300">
+                  ALKES
+                </span>
+              </div>
+              <p class="text-xs text-slate-500 leading-relaxed">
+                Distributor dan toko resmi peralatan medis, elektromedis, dan instrumen laboratorium terakreditasi Kemenkes RI untuk seluruh faskes di Indonesia.
+              </p>
+            </div>
+
+            <!-- Menu Navigasi Utama -->
+            <nav class="flex flex-wrap items-center justify-center gap-6 sm:gap-8 text-xs font-semibold">
+              <button type="button" @click="setView('portal')" class="text-slate-600 hover:text-emerald-600 transition-colors">
+                Beranda Utama
+              </button>
+              <button type="button" @click="setView('portal', 'galeri-alkes')" class="text-slate-600 hover:text-emerald-600 transition-colors">
+                Galeri & Katalog Alkes
+              </button>
+              <button type="button" @click="setView('blog')" class="text-slate-600 hover:text-emerald-600 transition-colors">
+                Halaman Blog
+              </button>
+              <button type="button" @click="setView('portal', 'layanan-anisa')" class="text-slate-600 hover:text-emerald-600 transition-colors">
+                Layanan & Kalibrasi
+              </button>
+              <button type="button" @click="bukaModalPenawaran()" class="text-emerald-600 hover:text-emerald-700 transition-colors font-bold">
+                Minta Penawaran
+              </button>
+            </nav>
+
+          </div>
+
+          <!-- Hak Cipta Utama: © 2026 Anisa Ayu Martalina -->
+          <div class="pt-8 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-4">
+            <p class="font-semibold text-slate-700">
+              © 2026 Anisa Ayu Martalina
+            </p>
+            <div class="flex items-center gap-4 sm:gap-6 text-slate-500 text-[11px] flex-wrap justify-center sm:justify-end">
+              <span class="hover:text-emerald-600 cursor-pointer transition-colors">Kebijakan Privasi</span>
+              <span>•</span>
+              <span class="hover:text-emerald-600 cursor-pointer transition-colors">Syarat & Ketentuan Distribusi</span>
+              <span>•</span>
+              <span class="hover:text-emerald-600 cursor-pointer transition-colors">Standar Kalibrasi BPFK</span>
+              <span>•</span>
+              <button
+                type="button"
+                @click="bukaAksesAdmin"
+                class="hover:text-emerald-700 text-slate-500 font-semibold cursor-pointer transition-colors flex items-center gap-1 hover:underline"
+                title="Akses Eksklusif Staf Logistik & Administrator"
+              >
+                <UIcon name="i-lucide-lock" class="w-3.5 h-3.5 text-slate-400" />
+                <span>Portal Khusus Staf / Admin</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </footer>
+
+      <!-- ============================================================== -->
+      <!-- MODAL 1: DETAIL SPESIFIKASI ALAT (TELEPORT CENTERED LIGHTBOX)  -->
+      <!-- ============================================================== -->
+      <Teleport to="body">
+        <transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0 scale-95"
+          enter-to-class="opacity-100 scale-100"
+          leave-active-class="transition duration-150 ease-in"
+          leave-from-class="opacity-100 scale-100"
+          leave-to-class="opacity-0 scale-95"
+        >
+          <div
+            v-if="isDetailModalOpen && selectedDetailItem"
+            class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+            @click.self="isDetailModalOpen = false"
+          >
+            <div class="relative w-full max-w-3xl bg-white border border-slate-200 rounded-2xl shadow-2xl p-6 overflow-hidden my-8">
+              
+              <!-- Modal Header -->
+              <div class="flex items-center justify-between pb-4 border-b border-slate-100">
+                <div class="flex items-center gap-2">
+                  <div class="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                    <UIcon name="i-lucide-activity" class="w-5 h-5" />
+                  </div>
+                  <h3 class="text-base sm:text-lg font-bold text-slate-900 line-clamp-1">
+                    {{ selectedDetailItem.nama_alat }}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                  @click="isDetailModalOpen = false"
+                >
+                  <UIcon name="i-lucide-x" class="w-5 h-5" />
+                </button>
+              </div>
+
+              <!-- Modal Body -->
+              <div class="py-5 space-y-6 max-h-[68vh] overflow-y-auto pr-1">
+                <!-- Gambar Preview Resolusi Penuh dengan Safe Fallback (Object Contain Utuh Penuh) -->
+                <div class="relative h-72 sm:h-80 md:h-96 rounded-xl overflow-hidden bg-slate-50 border border-slate-200 flex items-center justify-center p-3 sm:p-4">
+                  <img
+                    :src="selectedDetailItem.gambar || selectedDetailItem.fallbackGambar"
+                    :alt="selectedDetailItem.nama_alat"
+                    class="w-full h-full object-contain object-center transition-transform duration-300"
+                    style="object-fit: contain;"
+                    @error="(e) => handleImgError(e, selectedDetailItem?.fallbackGambar)"
+                  />
+                  <div class="absolute bottom-3 left-3 flex gap-2 pointer-events-none">
+                    <span class="text-xs font-bold px-2.5 py-1 rounded-md btn-mint shadow-sm">
+                      {{ selectedDetailItem.kategori }}
+                    </span>
+                    <span class="text-xs font-mono font-bold px-2.5 py-1 rounded-md bg-white/95 text-sky-700 border border-sky-200 shadow-sm">
+                      {{ selectedDetailItem.kode_alat }}
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Deskripsi & Status -->
+                <div class="space-y-2">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span class="text-xs font-bold text-sky-700 font-mono">
+                      {{ selectedDetailItem.kemenkes_akl || 'KEMENKES RI AKL RESMI' }}
+                    </span>
+                    <span class="text-xs font-bold px-2.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      {{ selectedDetailItem.garansi || '2 Tahun Garansi Resmi' }}
+                    </span>
+                  </div>
+                  <p class="text-sm text-slate-600 leading-relaxed">
+                    {{ selectedDetailItem.deskripsi }}
+                  </p>
+                </div>
+
+                <!-- Tabel Spesifikasi Teknis -->
+                <div v-if="selectedDetailItem.spesifikasi && selectedDetailItem.spesifikasi.length > 0" class="space-y-3">
+                  <h4 class="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                    <UIcon name="i-lucide-cpu" class="w-4 h-4 text-emerald-600" />
+                    Lembar Spesifikasi Teknis (Technical Data Sheet)
+                  </h4>
+                  <div class="rounded-xl border border-slate-200 overflow-hidden divide-y divide-slate-100 text-xs">
+                    <div
+                      v-for="(spek, sIdx) in selectedDetailItem.spesifikasi"
+                      :key="sIdx"
+                      class="p-3 bg-slate-50 flex items-start gap-2"
+                    >
+                      <UIcon name="i-lucide-check-circle" class="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                      <span class="text-slate-700 font-medium">{{ spek }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Info Lokasi & Estimasi Harga -->
+                <div class="p-4 rounded-xl bg-emerald-50/60 border border-emerald-100 flex items-center justify-between text-xs">
+                  <div>
+                    <span class="text-slate-500">Estimasi Harga Pengadaan: </span>
+                    <strong class="text-emerald-700 font-bold text-sm">{{ selectedDetailItem.harga_estimasi || 'Hubungi Sales' }}</strong>
+                  </div>
+                  <div>
+                    <span class="text-slate-500">Ketersediaan Fisik: </span>
+                    <strong class="text-emerald-600 font-bold">{{ selectedDetailItem.stok }} Unit Siap Kirim</strong>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Modal Footer -->
+              <div class="pt-4 border-t border-slate-100 flex items-center justify-between">
+                <button
+                  type="button"
+                  class="px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900 text-xs font-semibold"
+                  @click="isDetailModalOpen = false"
+                >
+                  Tutup
+                </button>
+                <button
+                  type="button"
+                  class="px-5 py-2.5 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider flex items-center gap-1.5"
+                  @click="isDetailModalOpen = false; bukaModalPenawaran(selectedDetailItem?.nama_alat)"
+                >
+                  <UIcon name="i-lucide-send" class="w-4 h-4" />
+                  <span>Minta Penawaran Harga Resmi</span>
+                </button>
+              </div>
+
+            </div>
+          </div>
+        </transition>
+      </Teleport>
+
+      <!-- ============================================================== -->
+      <!-- MODAL 2: PEMBACA ARTIKEL BLOG (TELEPORT CENTERED LIGHTBOX)     -->
+      <!-- ============================================================== -->
+      <Teleport to="body">
+        <transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0 scale-95"
+          enter-to-class="opacity-100 scale-100"
+          leave-active-class="transition duration-150 ease-in"
+          leave-from-class="opacity-100 scale-100"
+          leave-to-class="opacity-0 scale-95"
+        >
+          <div
+            v-if="isArticleModalOpen && selectedArticle"
+            class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+            @click.self="isArticleModalOpen = false"
+          >
+            <div class="relative w-full max-w-3xl bg-white border border-slate-200 rounded-2xl shadow-2xl p-6 overflow-hidden my-8">
+              
+              <!-- Modal Header -->
+              <div class="flex items-center justify-between pb-4 border-b border-slate-100">
+                <div class="flex items-center gap-2">
+                  <div class="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                    <UIcon name="i-lucide-book-open" class="w-5 h-5" />
+                  </div>
+                  <h3 class="text-base sm:text-lg font-bold text-slate-900 line-clamp-1">
+                    {{ selectedArticle.judul }}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                  @click="isArticleModalOpen = false"
+                >
+                  <UIcon name="i-lucide-x" class="w-5 h-5" />
+                </button>
+              </div>
+
+              <!-- Modal Body -->
+              <div class="py-5 space-y-6 max-h-[75vh] overflow-y-auto pr-1">
+                <!-- Gambar Utama Artikel Detail (Proporsional & Object-Contain) -->
+                <div class="relative w-full h-64 sm:h-72 md:h-80 rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-900/5 dark:bg-slate-950/60 flex items-center justify-center p-3 sm:p-4">
+                  <!-- Ambient soft blur backdrop matching the article image colors -->
+                  <img
+                    :src="selectedArticle.gambar || selectedArticle.fallbackGambar"
+                    :alt="selectedArticle.judul"
+                    aria-hidden="true"
+                    class="absolute inset-0 w-full h-full object-cover filter blur-xl opacity-20 dark:opacity-30 scale-110 pointer-events-none select-none"
+                  />
+                  <!-- Main Image without any cut-off or over-zoom -->
+                  <img
+                    :src="selectedArticle.gambar || selectedArticle.fallbackGambar"
+                    :alt="selectedArticle.judul"
+                    class="relative max-h-full max-w-full w-auto h-auto object-contain object-center rounded-xl shadow-sm z-10"
+                    @error="(e) => handleImgError(e, selectedArticle?.fallbackGambar)"
+                  />
+                  <div class="absolute bottom-3 left-3 z-20">
+                    <span class="text-xs font-bold px-3 py-1 rounded-lg btn-mint shadow-sm">
+                      {{ selectedArticle.kategori }}
+                    </span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between text-xs text-slate-500 border-b border-slate-100 pb-3">
+                  <div class="flex items-center gap-2">
+                    <UAvatar :src="selectedArticle.penulis.avatar" size="xs" />
+                    <span class="font-semibold text-slate-900">{{ selectedArticle.penulis.nama }} ({{ selectedArticle.penulis.gelar }})</span>
+                  </div>
+                  <span class="text-emerald-700 font-semibold">{{ selectedArticle.tanggal }} • {{ selectedArticle.waktuBaca }}</span>
+                </div>
+
+                <!-- Poin Kunci Ringkasan -->
+                <div class="p-4 rounded-xl bg-emerald-50/70 border border-emerald-100 space-y-2">
+                  <h5 class="text-xs font-bold text-emerald-800 uppercase tracking-wider flex items-center gap-1.5">
+                    <UIcon name="i-lucide-sparkles" class="w-4 h-4 text-emerald-600" />
+                    Poin Kunci Edukasi
+                  </h5>
+                  <ul class="space-y-1.5 text-xs text-slate-700 list-disc list-inside">
+                    <li v-for="(poin, pIdx) in selectedArticle.poinKunci" :key="pIdx">{{ poin }}</li>
+                  </ul>
+                </div>
+
+                <!-- Paragraf Lengkap -->
+                <div class="space-y-4 text-sm text-slate-600 leading-relaxed">
+                  <p v-for="(paragraf, pIdx) in selectedArticle.isiLengkap" :key="pIdx">
+                    {{ paragraf }}
+                  </p>
+                </div>
+
+                <!-- Tags -->
+                <div class="flex flex-wrap items-center gap-2 pt-2">
+                  <span class="text-xs text-slate-400">Topik Terkait:</span>
+                  <span
+                    v-for="t in selectedArticle.tags"
+                    :key="t"
+                    class="text-xs px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 font-medium"
+                  >
+                    #{{ t }}
                   </span>
                 </div>
               </div>
 
-              <!-- Judul & Kategori -->
-              <h2 class="alkes-name">{{ item.nama_alkes }}</h2>
-              <div class="alkes-category-pill">
-                {{ item.kategori }}
-              </div>
-
-              <p class="alkes-desc">{{ item.deskripsi }}</p>
-
-              <!-- Box Informasi Stok & Lokasi Bersih -->
-              <div class="alkes-meta-box">
-                <div class="meta-item">
-                  <span class="meta-label">Stok Tersedia</span>
-                  <span class="meta-val font-mono">{{ item.stok }} Unit</span>
-                </div>
-                <div class="meta-item-divider"></div>
-                <div class="meta-item">
-                  <span class="meta-label">Lokasi Lab</span>
-                  <span class="meta-val" :title="item.lokasi_lab">{{ item.lokasi_lab }}</span>
-                </div>
-              </div>
-
-              <!-- Tombol Aksi Cerah -->
-              <div class="card-action">
-                <button class="btn btn-pinjam" @click="pilihAlkesForm(item.nama_alkes)">
-                  <span>Pinjam Alat Ini</span>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                    <polyline points="12 5 19 12 12 19"></polyline>
-                  </svg>
+              <!-- Modal Footer -->
+              <div class="pt-4 border-t border-slate-100 flex items-center justify-end">
+                <button
+                  type="button"
+                  class="px-5 py-2.5 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider"
+                  @click="isArticleModalOpen = false"
+                >
+                  Selesai Membaca
                 </button>
               </div>
-            </article>
+
+            </div>
           </div>
-        </section>
+        </transition>
+      </Teleport>
 
-        <!-- ============================================== -->
-        <!-- TAB 2: FORMULIR PEMINJAMAN ALKES (SLIDE 23)    -->
-        <!-- ============================================== -->
-        <section v-if="activeNav === 'pinjam'" class="tab-section">
-          <div class="form-wrapper">
-            <div class="form-title-bar">
-              <div class="form-icon-header">📋</div>
-              <div>
-                <h2>Formulir Peminjaman Alat Kesehatan</h2>
-                <p>Silakan isi data mahasiswa dan tujuan praktikum dengan jelas dan benar.</p>
-              </div>
-            </div>
-
-            <!-- Notifikasi Berhasil -->
-            <div v-if="submitSuccess" class="alert-success-box">
-              <div class="success-icon-badge">✓</div>
-              <h3>Pengajuan Peminjaman Berhasil Dikirim!</h3>
-              <p>Nomor Pelacakan Resmi Peminjaman Anda:</p>
-              <div class="tracking-number-box">{{ noPeminjaman }}</div>
-              <p class="sub-hint">Simpan atau gunakan nomor ini di tab <strong>"Lacak Status Peminjaman"</strong> untuk memantau status persetujuan Kepala Lab.</p>
-              <div class="success-btns">
-                <button class="btn btn-primary" @click="activeNav = 'tracking'; inputTracking = noPeminjaman; cekStatus()">
-                  🔍 Lacak Status Sekarang
-                </button>
-                <button class="btn btn-secondary" @click="submitSuccess = false">
-                  ➕ Buat Pengajuan Lain
-                </button>
-              </div>
-            </div>
-
-            <!-- Form Body -->
-            <form v-else class="form-body" @submit.prevent="kirimPeminjaman">
-              <div class="form-grid-2">
-                <div class="input-col">
-                  <label for="nama">Nama Lengkap Mahasiswa *</label>
-                  <input id="nama" v-model="form.namaPeminjam" type="text" placeholder="Masukkan nama peminjam..." required />
-                </div>
-                <div class="input-col">
-                  <label for="nim">NIM Mahasiswa *</label>
-                  <input id="nim" v-model="form.nim" type="text" placeholder="Contoh: 20230140021" required />
-                </div>
-              </div>
-
-              <div class="form-grid-2">
-                <div class="input-col">
-                  <label for="prodi">Program Studi *</label>
-                  <select id="prodi" v-model="form.programStudi">
-                    <option value="S1 Informatika">S1 Informatika</option>
-                    <option value="S1 Keperawatan">S1 Keperawatan</option>
-                    <option value="S1 Kebidanan">S1 Kebidanan</option>
-                    <option value="D3 Farmasi">D3 Farmasi</option>
-                  </select>
-                </div>
-                <div class="input-col">
-                  <label for="alat">Pilih Alat Kesehatan (Alkes) *</label>
-                  <select id="alat" v-model="form.alkesDipilih">
-                    <option v-for="item in rawAlkes" :key="item.id" :value="item.nama_alkes">
-                      {{ item.nama_alkes }} (Tersedia: {{ item.stok }} Unit)
-                    </option>
-                  </select>
-                </div>
-              </div>
-
-              <div class="form-grid-2">
-                <div class="input-col">
-                  <label for="jumlah">Jumlah Unit yang Dipinjam *</label>
-                  <input id="jumlah" v-model.number="form.jumlahPinjam" type="number" min="1" max="5" required />
-                </div>
-                <div class="input-col">
-                  <label for="tgl">Tanggal Penggunaan / Praktikum *</label>
-                  <input id="tgl" v-model="form.tanggalPinjam" type="date" required />
-                </div>
-              </div>
-
-              <div class="input-col">
-                <label for="keperluan">Tujuan / Keperluan Praktikum *</label>
-                <textarea 
-                  id="keperluan" 
-                  v-model="form.keperluan" 
-                  rows="3" 
-                  placeholder="Jelaskan kebutuhan praktikum, nama mata kuliah, atau kegiatan..." 
-                  required
-                ></textarea>
-              </div>
-
-              <!-- Ringkasan Validasi (Slide 23) -->
-              <div class="summary-card">
-                <div class="summary-header">
-                  <span class="summary-badge">Ringkasan Pengajuan</span>
-                  <span class="summary-sub">Periksa kembali data sebelum mengirim formulir</span>
-                </div>
-                <div class="summary-details">
-                  <div class="summary-item">
-                    <span class="summary-lbl">Alat Dipilih:</span>
-                    <strong class="summary-val text-primary">{{ form.alkesDipilih }}</strong>
-                  </div>
-                  <div class="summary-item">
-                    <span class="summary-lbl">Jumlah:</span>
-                    <strong class="summary-val">{{ form.jumlahPinjam }} Unit</strong>
-                  </div>
-                  <div class="summary-item">
-                    <span class="summary-lbl">Peminjam:</span>
-                    <strong class="summary-val">{{ form.namaPeminjam || '-' }} ({{ form.nim || '-' }})</strong>
-                  </div>
-                  <div class="summary-item">
-                    <span class="summary-lbl">Tgl Praktikum:</span>
-                    <strong class="summary-val">{{ form.tanggalPinjam }}</strong>
-                  </div>
-                </div>
-              </div>
-
-              <button type="submit" class="btn btn-primary btn-submit-full">
-                <span>Kirim Pengajuan Peminjaman Alkes</span>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                  <line x1="22" y1="2" x2="11" y2="13"></line>
-                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                </svg>
-              </button>
-            </form>
-          </div>
-        </section>
-
-        <!-- ============================================== -->
-        <!-- TAB 3: LACAK STATUS (SLIDE 07)                 -->
-        <!-- ============================================== -->
-        <section v-if="activeNav === 'tracking'" class="tab-section">
-          <div class="tracking-panel">
-            <div class="panel-header-clean">
-              <h2>Lacak Status Peminjaman Alkes</h2>
-              <p>Masukkan Nomor Pelacakan Anda untuk mengetahui status verifikasi & persetujuan peminjaman alat.</p>
-            </div>
-
-            <div class="search-tracking-row">
-              <div class="search-input-box">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="11" cy="11" r="8"></circle>
-                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                </svg>
-                <input 
-                  v-model="inputTracking" 
-                  type="text" 
-                  placeholder="Contoh: PINJAM-ALKES-3482" 
-                  @keyup.enter="cekStatus" 
-                />
-              </div>
-              <button class="btn btn-primary" @click="cekStatus">Cek Status</button>
-            </div>
-
-            <!-- Hasil Pencarian -->
-            <div v-if="trackingResult && !trackingResult.notFound" class="tracking-card-result">
-              <div class="result-header">
+      <!-- ============================================================== -->
+      <!-- MODAL 3: PENAWARAN & KONSULTASI (TELEPORT CENTERED LIGHTBOX)   -->
+      <!-- ============================================================== -->
+      <Teleport to="body">
+        <transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0 scale-95"
+          enter-to-class="opacity-100 scale-100"
+          leave-active-class="transition duration-150 ease-in"
+          leave-from-class="opacity-100 scale-100"
+          leave-to-class="opacity-0 scale-95"
+        >
+          <div
+            v-if="isQuoteModalOpen"
+            class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+            @click.self="isQuoteModalOpen = false"
+          >
+            <div class="relative w-full max-w-xl bg-white border border-slate-200 rounded-2xl shadow-2xl p-6 overflow-hidden my-8">
+              
+              <!-- Modal Header -->
+              <div class="flex items-center justify-between pb-4 border-b border-slate-100">
                 <div>
-                  <span class="track-code">{{ trackingResult.noTracking }}</span>
-                  <h3 class="track-item-title">{{ trackingResult.alkes }}</h3>
+                  <h3 class="text-base sm:text-lg font-bold text-slate-900">
+                    Formulir Penawaran Resmi - Anisa Medika
+                  </h3>
+                  <p class="text-xs text-slate-500 mt-0.5">
+                    Dapatkan penawaran harga dan konsultasi dengan konsultan elektromedis.
+                  </p>
                 </div>
-                <span class="badge-status-glow">{{ trackingResult.status }}</span>
+                <button
+                  type="button"
+                  class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                  @click="isQuoteModalOpen = false"
+                >
+                  <UIcon name="i-lucide-x" class="w-5 h-5" />
+                </button>
               </div>
-              <div class="result-body-grid">
-                <div class="result-item">
-                  <span class="res-lbl">Nama Peminjam</span>
-                  <strong class="res-val">{{ trackingResult.peminjam }}</strong>
-                </div>
-                <div class="result-item">
-                  <span class="res-lbl">NIM Mahasiswa</span>
-                  <strong class="res-val font-mono">{{ trackingResult.nim }}</strong>
-                </div>
-                <div class="result-item">
-                  <span class="res-lbl">Jumlah Unit</span>
-                  <strong class="res-val">{{ trackingResult.jumlah }} Unit</strong>
-                </div>
-                <div class="result-item">
-                  <span class="res-lbl">Tanggal Penggunaan</span>
-                  <strong class="res-val">{{ trackingResult.tanggal }}</strong>
-                </div>
-              </div>
-            </div>
 
-            <div v-if="trackingResult && trackingResult.notFound" class="alert-not-found">
-              <span class="alert-icon">⚠️</span>
-              <div>
-                <strong>Nomor pelacakan tidak ditemukan</strong>
-                <p>Nomor "{{ inputTracking }}" tidak terdaftar dalam sistem peminjaman Alkes. Pastikan penulisan sesuai dengan bukti pengajuan.</p>
-              </div>
-            </div>
+              <!-- Modal Body -->
+              <form @submit.prevent="kirimPenawaran" class="py-5 space-y-4">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Nama Lengkap *</label>
+                    <input
+                      v-model="quoteForm.nama"
+                      type="text"
+                      placeholder="Contoh: dr. Hendra Wijaya"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                      required
+                    />
+                  </div>
 
-            <!-- Tabel Riwayat Peminjaman Bersih & Terang -->
-            <div class="history-block">
-              <div class="history-title-row">
-                <h3>Riwayat Peminjaman Alat Terbaru</h3>
-                <span class="badge-counter">{{ riwayatPinjam.length }} Pengajuan</span>
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Nama RS / Klinik *</label>
+                    <input
+                      v-model="quoteForm.instansi"
+                      type="text"
+                      placeholder="Contoh: RS Medika Pratama"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Nomor WhatsApp / HP *</label>
+                    <input
+                      v-model="quoteForm.telepon"
+                      type="text"
+                      placeholder="0812-XXXX-XXXX"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Alat yang Diminati</label>
+                    <input
+                      v-model="quoteForm.alatDipilih"
+                      type="text"
+                      placeholder="Contoh: USG 4D / AED"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">Catatan Kebutuhan / Jumlah Unit</label>
+                  <textarea
+                    v-model="quoteForm.pesan"
+                    rows="3"
+                    placeholder="Tuliskan spesifikasi khusus, target pengiriman, atau jadwal kalibrasi..."
+                    class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                  ></textarea>
+                </div>
+              </form>
+
+              <!-- Modal Footer -->
+              <div class="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  class="px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900 text-xs font-semibold"
+                  @click="isQuoteModalOpen = false"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  class="px-5 py-2.5 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider flex items-center gap-1.5"
+                  @click="kirimPenawaran"
+                >
+                  <UIcon name="i-lucide-send" class="w-4 h-4" />
+                  <span>Kirim ke WhatsApp Sales</span>
+                </button>
               </div>
-              <div class="table-responsive">
-                <table class="table-clean">
-                  <thead>
-                    <tr>
-                      <th>No. Tracking</th>
-                      <th>Alat Kesehatan</th>
-                      <th>Peminjam</th>
-                      <th>Jumlah</th>
-                      <th>Tanggal</th>
-                      <th>Status Pengajuan</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="h in riwayatPinjam" :key="h.noTracking">
-                      <td><code class="code-pill">{{ h.noTracking }}</code></td>
-                      <td><strong>{{ h.alkes }}</strong></td>
-                      <td>
-                        <div class="peminjam-name">{{ h.peminjam }}</div>
-                        <div class="peminjam-nim">{{ h.nim }}</div>
-                      </td>
-                      <td><span class="qty-pill">{{ h.jumlah }} unit</span></td>
-                      <td class="font-date">{{ h.tanggal }}</td>
-                      <td>
-                        <span class="pill-badge-table" :class="{ 'status-approved': h.status.includes('Disetujui'), 'status-active': h.status.includes('Aktif') }">
-                          {{ h.status }}
-                        </span>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+
             </div>
           </div>
-        </section>
+        </transition>
+      </Teleport>
 
-        <!-- ============================================== -->
-        <!-- TAB 4: STATUS INTEGRASI LARAVEL HERD           -->
-        <!-- ============================================== -->
-        <section v-if="activeNav === 'api-info'" class="tab-section">
-          <div class="backend-guide-card">
-            <div class="panel-header-clean">
-              <h2>Integrasi Backend Laravel Herd ⇄ Nuxt Frontend</h2>
-              <p>Informasi koneksi dan sinkronisasi REST API endpoint alat kesehatan:</p>
-            </div>
-
-            <div class="info-metric-grid">
-              <div class="metric-box box-blue">
-                <span class="metric-lbl">Target URL API</span>
-                <code class="metric-val text-sky">{{ fullApiUrl }}</code>
+      <!-- ============================================================== -->
+      <!-- MODAL 4: INVENTARIS CRUD (TELEPORT CENTERED LIGHTBOX)          -->
+      <!-- ============================================================== -->
+      <Teleport to="body">
+        <transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0 scale-95"
+          enter-to-class="opacity-100 scale-100"
+          leave-active-class="transition duration-150 ease-in"
+          leave-from-class="opacity-100 scale-100"
+          leave-to-class="opacity-0 scale-95"
+        >
+          <div
+            v-if="isModalOpen"
+            class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+            @click.self="isModalOpen = false"
+          >
+            <div class="relative w-full max-w-xl bg-white border border-slate-200 rounded-2xl shadow-2xl p-6 overflow-hidden my-8">
+              
+              <!-- Modal Header -->
+              <div class="flex items-center justify-between pb-4 border-b border-slate-100">
+                <div>
+                  <h3 class="text-base sm:text-lg font-bold text-slate-900">
+                    {{ isEditMode ? 'Edit Data Alat Medis' : 'Daftarkan Peralatan Medis Baru' }}
+                  </h3>
+                  <p class="text-xs text-slate-500 mt-0.5">
+                    {{ isEditMode ? 'Perbarui informasi spesifikasi dan stok alat.' : 'Daftarkan instrumen medis ke inventaris Anisa Medika.' }}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                  @click="isModalOpen = false"
+                >
+                  <UIcon name="i-lucide-x" class="w-5 h-5" />
+                </button>
               </div>
-              <div class="metric-box" :class="data && !error ? 'box-green' : 'box-amber'">
-                <span class="metric-lbl">Status Koneksi API</span>
-                <span class="metric-val" :class="data && !error ? 'text-emerald' : 'text-amber'">
-                  {{ data && !error ? '● 200 OK (Terhubung Herd)' : '● Menggunakan Data Lokal Modul' }}
-                </span>
-              </div>
-              <div class="metric-box box-indigo">
-                <span class="metric-lbl">Frontend Origin</span>
-                <span class="metric-val text-indigo">http://localhost:3000</span>
-              </div>
-            </div>
 
-            <div class="laravel-code-guide">
-              <div class="guide-header">
-                <h3>Contoh Kode Route Laravel Herd (<code>routes/api.php</code>):</h3>
-                <span class="lang-tag">PHP / Laravel</span>
+              <!-- Modal Body -->
+              <form @submit.prevent="simpanAlat" class="py-5 space-y-4">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Kode Alat *</label>
+                    <input
+                      v-model="formData.kode_alat"
+                      type="text"
+                      placeholder="Contoh: ALK-ANS-01"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 font-mono text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Nama Alat Medis *</label>
+                    <input
+                      v-model="formData.nama_alat"
+                      type="text"
+                      placeholder="Contoh: Tensimeter Digital"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Kategori Alkes *</label>
+                    <select
+                      v-model="formData.kategori"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                    >
+                      <option value="Alat Diagnostik">Alat Diagnostik</option>
+                      <option value="Monitoring Pasien">Monitoring Pasien</option>
+                      <option value="Bedah & Gawat Darurat">Bedah & Gawat Darurat</option>
+                      <option value="Rehabilitasi Medis">Rehabilitasi Medis</option>
+                      <option value="Laboratorium & Rehab">Laboratorium & Rehab</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Jumlah Stok Fisik *</label>
+                    <input
+                      v-model.number="formData.stok"
+                      type="number"
+                      min="0"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Status Kondisi *</label>
+                    <select
+                      v-model="formData.status"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                    >
+                      <option value="Tersedia">Tersedia</option>
+                      <option value="Dipakai">Dipakai</option>
+                      <option value="Rusak">Rusak</option>
+                      <option value="Stok Terbatas">Stok Terbatas</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label class="block text-xs font-semibold text-slate-700 mb-1">Lokasi Ruangan / Lab</label>
+                    <input
+                      v-model="formData.lokasi_lab"
+                      type="text"
+                      placeholder="Contoh: Lab Diagnostik"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label class="block text-xs font-semibold text-slate-700 mb-1">Deskripsi / Catatan Kalibrasi</label>
+                  <textarea
+                    v-model="formData.deskripsi"
+                    rows="3"
+                    placeholder="Catatan spesifikasi teknis atau sertifikasi kalibrasi BPFK..."
+                    class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                  ></textarea>
+                </div>
+              </form>
+
+              <!-- Modal Footer -->
+              <div class="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  class="px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900 text-xs font-semibold"
+                  @click="isModalOpen = false"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  class="px-5 py-2.5 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider flex items-center gap-1.5"
+                  :disabled="isSubmitting"
+                  @click="simpanAlat"
+                >
+                  <UIcon name="i-lucide-check" class="w-4 h-4" />
+                  <span>{{ isEditMode ? 'Simpan Perubahan' : 'Daftarkan Alat' }}</span>
+                </button>
               </div>
-              <pre><code>use App\Models\Alkes; // Model Alkes di Laravel
 
-// Route endpoint /alkes
-Route::get('/alkes', function () {
-    return response()->json([
-        'status'  => 'success',
-        'message' => 'Data Alkes berhasil diambil dari Laravel Herd',
-        'data'    => Alkes::all() // Mengambil seluruh data Alkes dari MySQL
-    ]);
-});
-
-// Route alias /data
-Route::get('/data', function () {
-    return response()->json([
-        'status'  => 'success',
-        'message' => 'Data Alkes berhasil diambil dari Laravel Herd',
-        'data'    => Alkes::all()
-    ]);
-});</code></pre>
-
-              <div class="guide-header" style="margin-top: 1.5rem;">
-                <h3>Pengaturan CORS di <code>config/cors.php</code>:</h3>
-                <span class="lang-tag">Config</span>
-              </div>
-              <pre><code>'allowed_origins' => ['http://localhost:3000'],</code></pre>
             </div>
           </div>
-        </section>
+        </transition>
+      </Teleport>
 
-      </div>
-    </main>
+      <!-- ============================================================== -->
+      <!-- MODAL 4: VERIFIKASI AKSES AREA KHUSUS ADMIN INVENTARIS         -->
+      <!-- ============================================================== -->
+      <Teleport to="body">
+        <transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0 scale-95"
+          enter-to-class="opacity-100 scale-100"
+          leave-active-class="transition duration-150 ease-in"
+          leave-from-class="opacity-100 scale-100"
+          leave-to-class="opacity-0 scale-95"
+        >
+          <div
+            v-if="isAdminLoginModalOpen"
+            class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+            @click.self="isAdminLoginModalOpen = false"
+          >
+            <div class="relative w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-2xl p-6 overflow-hidden">
+              <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center border border-amber-200">
+                    <UIcon name="i-lucide-shield-check" class="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 class="text-base font-bold text-slate-900">Portal Area Khusus Admin</h3>
+                    <p class="text-[11px] text-slate-500">Autentikasi Internal Anisa Medika</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                  @click="isAdminLoginModalOpen = false"
+                >
+                  <UIcon name="i-lucide-x" class="w-5 h-5" />
+                </button>
+              </div>
 
-    <!-- FOOTER KAMPUS BERSIH & ELEGAN -->
-    <footer class="app-footer">
-      <div class="nav-container footer-flex">
-        <div class="footer-brand">
-          <span class="footer-icon">🩺</span>
-          <strong>Portal Inventaris Alat Kesehatan (ALKES)</strong>
-        </div>
-        <p class="footer-sub">Universitas Muhammadiyah PKU Surakarta • Program Studi S1 Informatika</p>
-        <p class="footer-tech">Antarmuka Modern, Bersih, dan Cerah • Terintegrasi Nuxt 4 & Laravel Herd REST API</p>
+              <form @submit.prevent="verifikasiAdmin" class="py-5 space-y-4">
+                <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 leading-relaxed">
+                  Sistem inventaris, penambahan, pengeditan, dan penghapusan data alkes hanya diperuntukkan bagi staf logistik & administrator.
+                </div>
+
+                <div class="space-y-1.5">
+                  <label class="block text-xs font-bold text-slate-700">Masukkan PIN Admin *</label>
+                  <input
+                    v-model="adminPinInput"
+                    type="password"
+                    placeholder="Masukkan PIN Admin (Contoh: 1234)"
+                    class="w-full px-3.5 py-2.5 rounded-xl bg-white border border-slate-300 text-slate-900 text-sm focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
+                    autofocus
+                    required
+                  />
+                  <div v-if="adminPinError" class="text-xs text-rose-600 font-semibold pt-1 flex items-center gap-1">
+                    <UIcon name="i-lucide-alert-circle" class="w-3.5 h-3.5 shrink-0" />
+                    <span>{{ adminPinError }}</span>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+                  <span>Petunjuk Akses Cepat:</span>
+                  <span class="font-mono font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">PIN: 1234</span>
+                </div>
+
+                <div class="pt-4 border-t border-slate-100 flex items-center justify-end gap-2.5">
+                  <button
+                    type="button"
+                    class="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-semibold"
+                    @click="isAdminLoginModalOpen = false"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    class="px-5 py-2 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider flex items-center gap-1.5"
+                  >
+                    <UIcon name="i-lucide-unlock" class="w-4 h-4" />
+                    <span>Buka Panel Inventaris</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </transition>
+      </Teleport>
+
+      <!-- Floating Toast Notifications (Mint & Slate Light Aesthetic) -->
+      <div class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+        <transition-group
+          enter-active-class="transition duration-300 ease-out"
+          enter-from-class="transform translate-y-3 opacity-0"
+          enter-to-class="transform translate-y-0 opacity-100"
+          leave-active-class="transition duration-200 ease-in"
+          leave-from-class="transform translate-y-0 opacity-100"
+          leave-to-class="transform translate-y-3 opacity-0"
+        >
+          <div
+            v-for="t in activeToasts"
+            :key="t.id"
+            class="pointer-events-auto p-4 rounded-xl shadow-xl border flex items-start gap-3 backdrop-blur-xl bg-white"
+            :class="[
+              t.color === 'success' ? 'border-emerald-300 text-emerald-800' :
+              t.color === 'warning' ? 'border-amber-300 text-amber-800' :
+              t.color === 'error' ? 'border-rose-300 text-rose-800' :
+              'border-sky-300 text-sky-800'
+            ]"
+          >
+            <UIcon
+              :name="t.color === 'success' ? 'i-lucide-check-circle' : (t.color === 'warning' ? 'i-lucide-alert-triangle' : 'i-lucide-info')"
+              class="w-5 h-5 shrink-0 mt-0.5"
+            />
+            <div class="flex-1">
+              <h5 class="text-sm font-bold text-slate-900">{{ t.title }}</h5>
+              <p v-if="t.description" class="text-xs text-slate-600 mt-0.5">{{ t.description }}</p>
+            </div>
+            <button
+              type="button"
+              @click="activeToasts = activeToasts.filter(item => item.id !== t.id)"
+              class="text-slate-400 hover:text-slate-700"
+            >
+              <UIcon name="i-lucide-x" class="w-4 h-4" />
+            </button>
+          </div>
+        </transition-group>
       </div>
-    </footer>
-  </div>
+
+    </div>
+  </UApp>
 </template>
-
-<style>
-/* ========================================================
-   DESIGN SYSTEM: CERAH, SEGAR, BERSIH & TIDAK RAME
-   ======================================================== */
-:root {
-  --bg-page: #F8FAFC;
-  --bg-surface: #FFFFFF;
-  --border-light: #E2E8F0;
-  --border-focus: #0EA5E9;
-  
-  --text-main: #0F172A;
-  --text-body: #334155;
-  --text-muted: #64748B;
-  --text-subtle: #94A3B8;
-
-  --primary: #0284C7;
-  --primary-hover: #0369A1;
-  --primary-light: #E0F2FE;
-  
-  --emerald: #059669;
-  --emerald-light: #ECFDF5;
-  
-  --amber: #D97706;
-  --amber-light: #FEF3C7;
-  
-  --violet: #6366F1;
-  --violet-light: #EEF2FF;
-  
-  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.05);
-  --shadow-card: 0 4px 18px -2px rgba(15, 23, 42, 0.06), 0 2px 6px -1px rgba(15, 23, 42, 0.02);
-  --shadow-hover: 0 12px 28px -4px rgba(15, 23, 42, 0.1), 0 4px 8px -2px rgba(15, 23, 42, 0.03);
-}
-
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-body {
-  background-color: var(--bg-page);
-  /* Atmospheric cheerful soft ambient glow */
-  background-image: 
-    radial-gradient(at 0% 0%, rgba(224, 242, 254, 0.6) 0px, transparent 50%),
-    radial-gradient(at 100% 0%, rgba(236, 253, 245, 0.6) 0px, transparent 50%),
-    radial-gradient(at 50% 100%, rgba(238, 242, 255, 0.4) 0px, transparent 60%);
-  background-attachment: fixed;
-  color: var(--text-body);
-  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-  line-height: 1.6;
-  min-height: 100vh;
-  -webkit-font-smoothing: antialiased;
-}
-
-code, pre, .font-mono {
-  font-family: 'JetBrains Mono', monospace;
-}
-
-.alkes-app {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.nav-container {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 0 1.5rem;
-  width: 100%;
-}
-
-/* ========================================================
-   NAVBAR: BERSIH, TERANG & MODERN (GLASSMORPHIC)
-   ======================================================== */
-.navbar {
-  background: rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border-light);
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.03);
-}
-
-.navbar .nav-container {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-top: 1rem;
-  padding-bottom: 1rem;
-  flex-wrap: wrap;
-  gap: 1rem;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.logo-box {
-  background: linear-gradient(135deg, #0284C7 0%, #0EA5E9 100%);
-  width: 50px;
-  height: 50px;
-  border-radius: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.6rem;
-  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.25);
-  flex-shrink: 0;
-}
-
-.brand-tag {
-  font-size: 0.72rem;
-  font-weight: 700;
-  color: var(--primary);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.brand-name {
-  font-size: 1.35rem;
-  font-weight: 800;
-  color: var(--text-main);
-  letter-spacing: -0.02em;
-  line-height: 1.25;
-}
-
-.brand-sub {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-}
-
-.nav-status {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.9rem;
-  border-radius: 9999px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  background: #F1F5F9;
-  border: 1px solid var(--border-light);
-  color: var(--text-muted);
-}
-
-.status-pill .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-subtle);
-}
-
-.status-pill.connected {
-  background: var(--emerald-light);
-  border-color: #A7F3D0;
-  color: var(--emerald);
-}
-.status-pill.connected .dot {
-  background: #10B981;
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
-}
-
-.status-pill.disconnected {
-  background: var(--amber-light);
-  border-color: #FDE68A;
-  color: var(--amber);
-}
-.status-pill.disconnected .dot {
-  background: #F59E0B;
-}
-
-.btn-sync {
-  background: var(--bg-surface);
-  color: var(--text-body);
-  border: 1px solid var(--border-light);
-  padding: 0.45rem 0.95rem;
-  border-radius: 10px;
-  font-size: 0.825rem;
-  font-weight: 600;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  box-shadow: var(--shadow-sm);
-  transition: all 0.2s ease;
-}
-.btn-sync:hover:not(:disabled) {
-  background: #F8FAFC;
-  border-color: #CBD5E1;
-  color: var(--primary);
-  transform: translateY(-1px);
-}
-
-.spin {
-  animation: rotate 1s linear infinite;
-}
-@keyframes rotate {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-/* ========================================================
-   NAV TABS BAR: FLOATING PILL TABS
-   ======================================================== */
-.nav-tabs-bar {
-  background: rgba(248, 250, 252, 0.7);
-  border-top: 1px solid #EDF2F7;
-  padding: 0.35rem 0;
-}
-
-.tabs-row {
-  display: flex;
-  gap: 0.4rem;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.tabs-row::-webkit-scrollbar {
-  display: none;
-}
-
-.tab-link {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  padding: 0.65rem 1.1rem;
-  font-size: 0.875rem;
-  font-weight: 600;
-  cursor: pointer;
-  border-radius: 9999px;
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  transition: all 0.2s ease;
-}
-
-.tab-icon {
-  font-size: 1rem;
-}
-
-.tab-link:hover {
-  color: var(--text-main);
-  background: rgba(226, 232, 240, 0.5);
-}
-
-.tab-link.active {
-  color: var(--primary);
-  background: var(--primary-light);
-  font-weight: 700;
-}
-
-/* ========================================================
-   MAIN CONTENT & STATS BANNER
-   ======================================================== */
-.main-content {
-  flex: 1;
-  padding: 2rem 0;
-}
-
-.stat-banner {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1rem;
-  margin-bottom: 2rem;
-}
-
-.stat-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
-  border-radius: 16px;
-  padding: 1.15rem 1.25rem;
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  box-shadow: var(--shadow-card);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-.stat-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-hover);
-}
-
-.stat-icon-wrapper {
-  width: 46px;
-  height: 46px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.35rem;
-  flex-shrink: 0;
-}
-
-.stat-blue .stat-icon-wrapper {
-  background: #E0F2FE;
-  color: #0284C7;
-}
-.stat-emerald .stat-icon-wrapper {
-  background: #DCFCE7;
-  color: #10B981;
-}
-.stat-violet .stat-icon-wrapper {
-  background: #EEF2FF;
-  color: #6366F1;
-}
-.stat-amber .stat-icon-wrapper {
-  background: #FEF3C7;
-  color: #F59E0B;
-}
-
-.stat-val {
-  font-size: 1.25rem;
-  font-weight: 800;
-  color: var(--text-main);
-  line-height: 1.2;
-}
-
-.stat-label {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  font-weight: 500;
-}
-
-/* ========================================================
-   CATALOG TOOLBAR (SEARCH & CATEGORIES)
-   ======================================================== */
-.catalog-toolbar {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
-  border-radius: 18px;
-  padding: 1.5rem;
-  margin-bottom: 2rem;
-  box-shadow: var(--shadow-card);
-}
-
-.toolbar-search {
-  position: relative;
-  display: flex;
-  align-items: center;
-  margin-bottom: 1.25rem;
-}
-
-.toolbar-search svg {
-  position: absolute;
-  left: 1.15rem;
-  color: var(--text-subtle);
-  pointer-events: none;
-}
-
-.toolbar-search input {
-  width: 100%;
-  background: #F8FAFC;
-  border: 1.5px solid var(--border-light);
-  color: var(--text-main);
-  padding: 0.85rem 2.8rem 0.85rem 3.2rem;
-  border-radius: 12px;
-  font-size: 0.95rem;
-  font-family: inherit;
-  outline: none;
-  transition: all 0.2s ease;
-}
-.toolbar-search input:focus {
-  background: #FFFFFF;
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.12);
-}
-.toolbar-search input::placeholder {
-  color: var(--text-subtle);
-}
-
-.clear-icon {
-  position: absolute;
-  right: 1.15rem;
-  background: #E2E8F0;
-  border: none;
-  color: var(--text-muted);
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  font-size: 0.75rem;
-  transition: all 0.15s ease;
-}
-.clear-icon:hover {
-  background: #CBD5E1;
-  color: var(--text-main);
-}
-
-.kategori-chips-wrapper {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1.15rem;
-  flex-wrap: wrap;
-}
-
-.chips-title {
-  font-size: 0.825rem;
-  font-weight: 700;
-  color: var(--text-muted);
-}
-
-.kategori-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.chip-btn {
-  background: #F1F5F9;
-  border: 1px solid var(--border-light);
-  color: var(--text-body);
-  padding: 0.4rem 0.9rem;
-  border-radius: 9999px;
-  font-size: 0.825rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.18s ease;
-}
-
-.chip-btn:hover {
-  background: #E2E8F0;
-  color: var(--text-main);
-  border-color: #CBD5E1;
-}
-
-.chip-btn.chip-active {
-  background: linear-gradient(135deg, #0284C7 0%, #0EA5E9 100%);
-  color: #FFFFFF;
-  border-color: #0284C7;
-  font-weight: 700;
-  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.25);
-}
-
-.toolbar-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.825rem;
-  color: var(--text-muted);
-  border-top: 1px solid #EDF2F7;
-  padding-top: 0.85rem;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.meta-count strong {
-  color: var(--text-main);
-}
-
-.search-hint {
-  color: var(--primary);
-  font-weight: 600;
-  background: var(--primary-light);
-  padding: 0.2rem 0.6rem;
-  border-radius: 6px;
-}
-
-/* ========================================================
-   ALKES GRID & CARDS: ENJIK, BERSIH & CERAH
-   ======================================================== */
-.alkes-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  gap: 1.5rem;
-}
-
-.alkes-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
-  border-radius: 18px;
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-card);
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-}
-
-.alkes-card:hover {
-  transform: translateY(-4px);
-  box-shadow: var(--shadow-hover);
-  border-color: #CBD5E1;
-}
-
-.card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 1rem;
-}
-
-.card-avatar {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #E0F2FE 0%, #F0FDF4 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.4rem;
-  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.1);
-  border: 1px solid #E0F2FE;
-}
-
-.card-badges {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.35rem;
-}
-
-.code-badge {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.725rem;
-  background: #F1F5F9;
-  color: var(--text-muted);
-  padding: 0.2rem 0.55rem;
-  border-radius: 6px;
-  font-weight: 600;
-  border: 1px solid #E2E8F0;
-}
-
-.status-badge {
-  font-size: 0.725rem;
-  font-weight: 700;
-  padding: 0.25rem 0.65rem;
-  border-radius: 9999px;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.badge-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.status-ready {
-  background: var(--emerald-light);
-  color: var(--emerald);
-  border: 1px solid #A7F3D0;
-}
-
-.status-warn {
-  background: var(--amber-light);
-  color: var(--amber);
-  border: 1px solid #FDE68A;
-}
-
-.alkes-name {
-  font-size: 1.15rem;
-  font-weight: 700;
-  color: var(--text-main);
-  margin-bottom: 0.4rem;
-  line-height: 1.35;
-}
-
-.alkes-category-pill {
-  display: inline-block;
-  align-self: flex-start;
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: #0369A1;
-  background: var(--primary-light);
-  padding: 0.2rem 0.65rem;
-  border-radius: 6px;
-  margin-bottom: 0.85rem;
-}
-
-.alkes-desc {
-  font-size: 0.875rem;
-  color: var(--text-body);
-  margin-bottom: 1.25rem;
-  line-height: 1.55;
-  flex: 1;
-}
-
-.alkes-meta-box {
-  background: #F8FAFC;
-  border: 1px solid var(--border-light);
-  border-radius: 12px;
-  padding: 0.85rem 1rem;
-  margin-bottom: 1.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.meta-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.meta-item-divider {
-  width: 1px;
-  height: 30px;
-  background: var(--border-light);
-}
-
-.meta-label {
-  font-size: 0.72rem;
-  color: var(--text-subtle);
-  text-transform: uppercase;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.meta-val {
-  color: var(--text-main);
-  font-weight: 700;
-  font-size: 0.875rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 155px;
-}
-
-.card-action {
-  margin-top: auto;
-}
-
-.btn-pinjam {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 0.5rem;
-  background: #F1F5F9;
-  color: var(--primary);
-  border: 1px solid #CBD5E1;
-  padding: 0.75rem 1rem;
-  border-radius: 12px;
-  font-weight: 700;
-  font-size: 0.875rem;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-.btn-pinjam:hover {
-  background: linear-gradient(135deg, #0284C7 0%, #0EA5E9 100%);
-  color: #FFFFFF;
-  border-color: #0284C7;
-  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25);
-  transform: translateY(-1px);
-}
-
-/* ========================================================
-   GLOBAL BUTTONS
-   ======================================================== */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.65rem 1.25rem;
-  border-radius: 12px;
-  font-weight: 700;
-  font-size: 0.875rem;
-  cursor: pointer;
-  border: none;
-  transition: all 0.2s ease;
-}
-
-.btn-primary {
-  background: linear-gradient(135deg, #0284C7 0%, #0EA5E9 100%);
-  color: #FFFFFF;
-  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.25);
-}
-.btn-primary:hover {
-  background: linear-gradient(135deg, #0369A1 0%, #0284C7 100%);
-  box-shadow: 0 6px 18px rgba(2, 132, 199, 0.35);
-  transform: translateY(-1px);
-}
-
-.btn-secondary {
-  background: #F1F5F9;
-  color: var(--text-body);
-  border: 1px solid var(--border-light);
-}
-.btn-secondary:hover {
-  background: #E2E8F0;
-  color: var(--text-main);
-}
-
-/* ========================================================
-   FORMULIR PEMINJAMAN ALKES: ELEGAN, BERSIH & RAPI
-   ======================================================== */
-.form-wrapper {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
-  border-radius: 20px;
-  padding: 2.25rem;
-  max-width: 820px;
-  margin: 0 auto;
-  box-shadow: var(--shadow-card);
-}
-
-.form-title-bar {
-  display: flex;
-  align-items: center;
-  gap: 1.15rem;
-  border-bottom: 1px solid #EDF2F7;
-  padding-bottom: 1.25rem;
-  margin-bottom: 1.75rem;
-}
-
-.form-icon-header {
-  width: 52px;
-  height: 52px;
-  border-radius: 14px;
-  background: #E0F2FE;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.6rem;
-  color: #0284C7;
-  flex-shrink: 0;
-}
-
-.form-title-bar h2 {
-  font-size: 1.4rem;
-  color: var(--text-main);
-  font-weight: 800;
-  margin-bottom: 0.2rem;
-}
-.form-title-bar p {
-  color: var(--text-muted);
-  font-size: 0.875rem;
-}
-
-.form-body {
-  display: flex;
-  flex-direction: column;
-  gap: 1.35rem;
-}
-
-.form-grid-2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.25rem;
-}
-
-.input-col {
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-}
-
-.input-col label {
-  font-size: 0.825rem;
-  font-weight: 700;
-  color: var(--text-main);
-}
-
-.input-col input,
-.input-col select,
-.input-col textarea {
-  background: #F8FAFC;
-  border: 1.5px solid var(--border-light);
-  color: var(--text-main);
-  padding: 0.75rem 0.95rem;
-  border-radius: 12px;
-  font-size: 0.925rem;
-  font-family: inherit;
-  outline: none;
-  transition: all 0.2s ease;
-}
-.input-col input:focus,
-.input-col select:focus,
-.input-col textarea:focus {
-  background: #FFFFFF;
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.12);
-}
-
-.summary-card {
-  background: #F8FAFC;
-  border: 1px solid #E2E8F0;
-  border-radius: 14px;
-  padding: 1.25rem;
-  border-left: 4px solid var(--primary);
-}
-
-.summary-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.85rem;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.summary-badge {
-  font-size: 0.8rem;
-  font-weight: 800;
-  color: var(--primary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.summary-sub {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
-
-.summary-details {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-  font-size: 0.85rem;
-}
-
-.summary-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.summary-lbl {
-  color: var(--text-muted);
-  font-size: 0.75rem;
-}
-
-.summary-val {
-  color: var(--text-main);
-}
-
-.text-primary {
-  color: var(--primary);
-}
-
-.btn-submit-full {
-  width: 100%;
-  justify-content: center;
-  padding: 0.9rem;
-  margin-top: 0.5rem;
-  font-size: 1rem;
-}
-
-/* SUCCESS BANNER */
-.alert-success-box {
-  background: #F0FDF4;
-  border: 1.5px solid #86EFAC;
-  border-radius: 18px;
-  padding: 2.5rem 2rem;
-  text-align: center;
-}
-
-.success-icon-badge {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: #10B981;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.8rem;
-  font-weight: bold;
-  margin: 0 auto 1.25rem;
-  box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
-}
-
-.alert-success-box h3 {
-  font-size: 1.4rem;
-  color: #065F46;
-  font-weight: 800;
-  margin-bottom: 0.5rem;
-}
-
-.tracking-number-box {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 1.8rem;
-  font-weight: 800;
-  color: #047857;
-  background: #FFFFFF;
-  display: inline-block;
-  padding: 0.65rem 1.75rem;
-  border-radius: 12px;
-  border: 2px dashed #34D399;
-  margin: 1.25rem 0;
-  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.1);
-}
-
-.sub-hint {
-  font-size: 0.875rem;
-  color: var(--text-muted);
-  max-width: 500px;
-  margin: 0 auto;
-}
-
-.success-btns {
-  display: flex;
-  justify-content: center;
-  gap: 1rem;
-  margin-top: 1.75rem;
-  flex-wrap: wrap;
-}
-
-/* ========================================================
-   TRACKING TAB & CLEAN TABLE
-   ======================================================== */
-.tracking-panel {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
-  border-radius: 20px;
-  padding: 2.25rem;
-  box-shadow: var(--shadow-card);
-}
-
-.panel-header-clean {
-  margin-bottom: 1.5rem;
-}
-.panel-header-clean h2 {
-  font-size: 1.4rem;
-  font-weight: 800;
-  color: var(--text-main);
-  margin-bottom: 0.25rem;
-}
-.panel-header-clean p {
-  color: var(--text-muted);
-  font-size: 0.875rem;
-}
-
-.search-tracking-row {
-  display: flex;
-  gap: 0.75rem;
-  margin-bottom: 1.75rem;
-}
-
-.search-input-box {
-  flex: 1;
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.search-input-box svg {
-  position: absolute;
-  left: 1rem;
-  color: var(--text-subtle);
-  pointer-events: none;
-}
-
-.search-input-box input {
-  width: 100%;
-  background: #F8FAFC;
-  border: 1.5px solid var(--border-light);
-  color: var(--text-main);
-  padding: 0.85rem 1rem 0.85rem 2.8rem;
-  border-radius: 12px;
-  font-size: 0.95rem;
-  outline: none;
-  transition: all 0.2s ease;
-}
-.search-input-box input:focus {
-  background: #FFFFFF;
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.12);
-}
-
-.tracking-card-result {
-  background: #F0F9FF;
-  border: 1.5px solid #BAE6FD;
-  border-radius: 16px;
-  padding: 1.5rem;
-  margin-bottom: 2rem;
-}
-
-.result-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid #E0F2FE;
-  padding-bottom: 0.85rem;
-  margin-bottom: 1rem;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-}
-
-.track-code {
-  font-family: 'JetBrains Mono', monospace;
-  color: var(--primary);
-  font-size: 0.8rem;
-  font-weight: 700;
-  display: block;
-}
-
-.track-item-title {
-  font-size: 1.2rem;
-  font-weight: 800;
-  color: var(--text-main);
-}
-
-.badge-status-glow {
-  background: #E0F2FE;
-  color: #0369A1;
-  border: 1px solid #7DD3FC;
-  padding: 0.4rem 0.95rem;
-  border-radius: 9999px;
-  font-size: 0.825rem;
-  font-weight: 700;
-}
-
-.result-body-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1.25rem;
-  font-size: 0.875rem;
-}
-
-.result-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-
-.res-lbl {
-  color: var(--text-muted);
-  font-size: 0.75rem;
-}
-
-.res-val {
-  color: var(--text-main);
-}
-
-.alert-not-found {
-  background: #FFF1F2;
-  border: 1px solid #FECDD3;
-  color: #9F1239;
-  padding: 1.15rem 1.35rem;
-  border-radius: 14px;
-  margin-bottom: 2rem;
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-.alert-icon {
-  font-size: 1.5rem;
-}
-.alert-not-found p {
-  font-size: 0.85rem;
-  color: #BE123C;
-  margin-top: 0.15rem;
-}
-
-.history-block {
-  margin-top: 2rem;
-}
-
-.history-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
-}
-
-.history-title-row h3 {
-  font-size: 1.1rem;
-  font-weight: 800;
-  color: var(--text-main);
-}
-
-.badge-counter {
-  background: #F1F5F9;
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  font-weight: 700;
-  padding: 0.25rem 0.65rem;
-  border-radius: 9999px;
-}
-
-.table-responsive {
-  overflow-x: auto;
-  border: 1px solid var(--border-light);
-  border-radius: 14px;
-  background: var(--bg-surface);
-}
-
-.table-clean {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.875rem;
-  text-align: left;
-}
-
-.table-clean th {
-  background: #F8FAFC;
-  color: var(--text-muted);
-  padding: 0.85rem 1.15rem;
-  font-weight: 700;
-  border-bottom: 1px solid var(--border-light);
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.table-clean td {
-  padding: 0.95rem 1.15rem;
-  border-bottom: 1px solid #F1F5F9;
-  color: var(--text-body);
-}
-
-.table-clean tr:last-child td {
-  border-bottom: none;
-}
-
-.table-clean tr:hover td {
-  background: #F8FAFC;
-}
-
-.code-pill {
-  font-family: 'JetBrains Mono', monospace;
-  background: #F1F5F9;
-  padding: 0.25rem 0.6rem;
-  border-radius: 6px;
-  font-size: 0.775rem;
-  color: var(--text-main);
-  border: 1px solid #E2E8F0;
-  white-space: nowrap;
-  display: inline-block;
-}
-
-.peminjam-name {
-  font-weight: 600;
-  color: var(--text-main);
-}
-
-.peminjam-nim {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
-}
-
-.qty-pill {
-  font-weight: 700;
-  color: var(--primary);
-  background: var(--primary-light);
-  padding: 0.2rem 0.55rem;
-  border-radius: 6px;
-  font-size: 0.8rem;
-  white-space: nowrap;
-  display: inline-block;
-}
-
-.font-date {
-  font-size: 0.825rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.pill-badge-table {
-  display: inline-block;
-  background: #F1F5F9;
-  color: var(--text-muted);
-  padding: 0.25rem 0.75rem;
-  border-radius: 9999px;
-  font-size: 0.775rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.pill-badge-table.status-approved {
-  background: var(--emerald-light);
-  color: var(--emerald);
-  border: 1px solid #A7F3D0;
-}
-
-.pill-badge-table.status-active {
-  background: var(--primary-light);
-  color: var(--primary);
-  border: 1px solid #BAE6FD;
-}
-
-/* ========================================================
-   BACKEND GUIDE TAB: BERSIH & JELAS
-   ======================================================== */
-.backend-guide-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-light);
-  border-radius: 20px;
-  padding: 2.25rem;
-  box-shadow: var(--shadow-card);
-}
-
-.info-metric-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1.25rem;
-  margin: 1.75rem 0;
-}
-
-.metric-box {
-  padding: 1.15rem 1.25rem;
-  border-radius: 14px;
-  border: 1px solid var(--border-light);
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.box-blue {
-  background: #F0F9FF;
-  border-color: #BAE6FD;
-}
-.box-green {
-  background: #F0FDF4;
-  border-color: #BBF7D0;
-}
-.box-amber {
-  background: #FFFBEB;
-  border-color: #FDE68A;
-}
-.box-indigo {
-  background: #EEF2FF;
-  border-color: #C7D2FE;
-}
-
-.metric-lbl {
-  display: block;
-  font-size: 0.725rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.metric-val {
-  font-weight: 700;
-  font-size: 0.95rem;
-}
-
-.text-sky { color: #0284C7; }
-.text-emerald { color: #059669; }
-.text-amber { color: #D97706; }
-.text-indigo { color: #4F46E5; }
-
-.laravel-code-guide {
-  margin-top: 2rem;
-}
-
-.guide-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.65rem;
-}
-
-.guide-header h3 {
-  font-size: 0.95rem;
-  font-weight: 700;
-  color: var(--text-main);
-}
-
-.lang-tag {
-  font-size: 0.7rem;
-  font-weight: 700;
-  background: #F1F5F9;
-  color: var(--text-muted);
-  padding: 0.2rem 0.5rem;
-  border-radius: 6px;
-  text-transform: uppercase;
-}
-
-.laravel-code-guide pre {
-  background: #0F172A;
-  padding: 1.15rem 1.25rem;
-  border-radius: 12px;
-  color: #E2E8F0;
-  font-size: 0.825rem;
-  overflow-x: auto;
-  line-height: 1.6;
-}
-
-/* ========================================================
-   EMPTY & LOADING STATES
-   ======================================================== */
-.state-empty {
-  background: var(--bg-surface);
-  border: 2px dashed var(--border-light);
-  border-radius: 18px;
-  padding: 3.5rem 1.5rem;
-  text-align: center;
-  margin-top: 1rem;
-}
-
-.empty-emoji {
-  font-size: 3rem;
-  margin-bottom: 1rem;
-}
-
-.state-empty h3 {
-  font-size: 1.3rem;
-  color: var(--text-main);
-  font-weight: 800;
-  margin-bottom: 0.5rem;
-}
-
-.state-empty p {
-  color: var(--text-muted);
-  font-size: 0.9rem;
-  max-width: 480px;
-  margin: 0 auto 1.5rem;
-}
-
-.state-loading {
-  text-align: center;
-  padding: 4.5rem 1rem;
-  color: var(--text-muted);
-}
-
-.spinner-circle {
-  width: 42px;
-  height: 42px;
-  border: 3.5px solid #E2E8F0;
-  border-top-color: var(--primary);
-  border-radius: 50%;
-  margin: 0 auto 1rem;
-  animation: rotate 0.8s linear infinite;
-}
-
-/* ========================================================
-   FOOTER: BERSIH & PROFESIONAL
-   ======================================================== */
-.app-footer {
-  background: var(--bg-surface);
-  border-top: 1px solid var(--border-light);
-  padding: 2.25rem 0;
-  margin-top: auto;
-}
-
-.footer-flex {
-  text-align: center;
-  font-size: 0.875rem;
-  color: var(--text-body);
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.footer-brand {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  font-size: 0.95rem;
-  color: var(--text-main);
-}
-
-.footer-icon {
-  font-size: 1.1rem;
-}
-
-.footer-sub {
-  color: var(--text-muted);
-  font-size: 0.825rem;
-}
-
-.footer-tech {
-  font-size: 0.75rem;
-  color: var(--text-subtle);
-  margin-top: 0.25rem;
-}
-
-/* ========================================================
-   RESPONSIVE DESIGN
-   ======================================================== */
-@media (max-width: 900px) {
-  .stat-banner {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 768px) {
-  .form-grid-2 {
-    grid-template-columns: 1fr;
-  }
-  .info-metric-grid {
-    grid-template-columns: 1fr;
-  }
-  .result-body-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-  .stat-banner {
-    grid-template-columns: 1fr;
-  }
-  .navbar .nav-container {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .nav-status {
-    width: 100%;
-    justify-content: space-between;
-  }
-  .summary-details {
-    grid-template-columns: 1fr;
-  }
-}
-</style>

@@ -1,0 +1,412 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+/* Tailwind CSS v4 class-based dark mode variant */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ==========================================================================
+   ANISA MEDIKA - TEMA TERANG (FRESH MINT GREEN & SKY BLUE MEDICAL)
+   ========================================================================== */
+
+/* Smooth theme transitions & modern clean typography */
+html {
+  scroll-behavior: smooth;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #f8fafc;
+  color: #0f172a;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Global smooth transition for background and text changes */
+header, footer, section, main, article, button, input, select, textarea {
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* --------------------------------------------------------------------------
+   Fresh Mint & Sky Blue Light Banner Background
+   -------------------------------------------------------------------------- */
+.anisa-light-banner {
+  background: 
+    radial-gradient(circle at 85% 15%, rgba(16, 185, 129, 0.14) 0%, transparent 45%),
+    radial-gradient(circle at 10% 85%, rgba(14, 165, 233, 0.14) 0%, transparent 45%),
+    linear-gradient(135deg, #f0fdf4 0%, #f8fafc 40%, #f0f9ff 100%) !important;
+}
+
+/* Mint & Bright Blue Gradient Text */
+.anisa-mint-text {
+  background: linear-gradient(135deg, #059669 0%, #0d9488 45%, #0284c7 100%);
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  display: inline-block;
+}
+
+/* Vibrant Fresh Mint Button */
+.btn-mint {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  box-shadow: 0 4px 18px -3px rgba(16, 185, 129, 0.38);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-mint:hover {
+  background: linear-gradient(135deg, #34d399 0%, #047857 100%) !important;
+  box-shadow: 0 6px 24px -2px rgba(16, 185, 129, 0.55);
+  transform: translateY(-2px);
+  color: #ffffff !important;
+}
+
+.btn-mint:active {
+  transform: translateY(0px);
+  box-shadow: 0 2px 10px -2px rgba(16, 185, 129, 0.3);
+}
+
+/* Bright Sky Blue Outlined Button */
+.btn-sky-outline {
+  border: 1.5px solid #0284c7 !important;
+  color: #0369a1 !important;
+  background: #f0f9ff !important;
+  font-weight: 600 !important;
+  backdrop-filter: blur(8px);
+  transition: all 0.25s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-sky-outline:hover {
+  background: #e0f2fe !important;
+  border-color: #0284c7 !important;
+  color: #0c4a6e !important;
+  box-shadow: 0 4px 16px -3px rgba(2, 132, 199, 0.25);
+  transform: translateY(-1.5px);
+}
+
+/* Mint Outlined Button */
+.btn-mint-outline {
+  border: 1.5px solid #059669 !important;
+  color: #047857 !important;
+  background: #ecfdf5 !important;
+  font-weight: 600 !important;
+  transition: all 0.25s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-mint-outline:hover {
+  background: #d1fae5 !important;
+  border-color: #047857 !important;
+  color: #064e3b !important;
+  box-shadow: 0 4px 16px -3px rgba(16, 185, 129, 0.25);
+  transform: translateY(-1.5px);
+}
+
+/* Bright Sky Solid Button */
+.btn-sky {
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  box-shadow: 0 4px 18px -3px rgba(2, 132, 199, 0.38);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-sky:hover {
+  background: linear-gradient(135deg, #38bdf8 0%, #0284c7 100%) !important;
+  box-shadow: 0 6px 24px -2px rgba(2, 132, 199, 0.55);
+  transform: translateY(-2px);
+  color: #ffffff !important;
+}
+
+/* Fresh Glow Utility */
+.glow-mint {
+  box-shadow: 0 0 25px -4px rgba(16, 185, 129, 0.35);
+}
+
+.glow-sky {
+  box-shadow: 0 0 25px -4px rgba(14, 165, 233, 0.35);
+}
+
+/* --------------------------------------------------------------------------
+   Keyframe Animations
+   -------------------------------------------------------------------------- */
+@keyframes heartPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.92;
+  }
+}
+
+.animate-heart-pulse {
+  animation: heartPulse 2s ease-in-out infinite;
+}
+
+@keyframes floatSlow {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-float {
+  animation: floatSlow 4s ease-in-out infinite;
+}
+
+/* --------------------------------------------------------------------------
+   Fresh Mint & Sky Scrollbars
+   -------------------------------------------------------------------------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.4);
+  border-radius: 9999px;
+  border: 2px solid #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.8);
+}
+
+/* ==========================================================================
+   ANISA MEDIKA - DARK MODE (DEEP MEDICAL NAVY & MINT / SKY ACCENTS)
+   ========================================================================== */
+
+html.dark,
+html.dark body,
+body.dark,
+.dark.min-h-screen,
+.dark main {
+  background-color: #080f1d !important;
+  color: #f1f5f9 !important;
+}
+
+/* Dark Sticky Navbar */
+.dark header,
+html.dark header {
+  background-color: rgba(10, 18, 35, 0.96) !important;
+  border-bottom-color: #1a2a44 !important;
+}
+
+.dark header .text-slate-900,
+html.dark header .text-slate-900 {
+  color: #f8fafc !important;
+}
+
+.dark header .text-slate-600,
+html.dark header .text-slate-600 {
+  color: #94a3b8 !important;
+}
+
+.dark header .text-slate-500,
+html.dark header .text-slate-500 {
+  color: #64748b !important;
+}
+
+.dark header .hover\:bg-slate-100:hover,
+html.dark header .hover\:bg-slate-100:hover {
+  background-color: #16243f !important;
+  color: #34d399 !important;
+}
+
+/* Dark Hero Banner */
+.dark .anisa-light-banner,
+html.dark .anisa-light-banner {
+  background: 
+    radial-gradient(circle at 85% 15%, rgba(16, 185, 129, 0.16) 0%, transparent 55%),
+    radial-gradient(circle at 10% 85%, rgba(14, 165, 233, 0.16) 0%, transparent 55%),
+    linear-gradient(135deg, #091222 0%, #0c1b33 50%, #07101f 100%) !important;
+  border-bottom-color: #1a2a44 !important;
+}
+
+/* Dark Surfaces, Cards, and All White Variants */
+.dark .bg-white,
+.dark [class*="bg-white"],
+html.dark .bg-white,
+html.dark [class*="bg-white"] {
+  background-color: #0f1c33 !important;
+  border-color: #1d2f4d !important;
+  color: #f1f5f9 !important;
+}
+
+.dark .bg-slate-50,
+.dark [class*="bg-slate-50"],
+html.dark .bg-slate-50,
+html.dark [class*="bg-slate-50"] {
+  background-color: #0b1424 !important;
+  border-color: #1a2a44 !important;
+}
+
+.dark .bg-slate-100,
+.dark [class*="bg-slate-100"],
+html.dark .bg-slate-100,
+html.dark [class*="bg-slate-100"] {
+  background-color: #13223b !important;
+  border-color: #203454 !important;
+  color: #e2e8f0 !important;
+}
+
+.dark .text-slate-900,
+.dark .text-slate-800,
+html.dark .text-slate-900,
+html.dark .text-slate-800 {
+  color: #f8fafc !important;
+}
+
+.dark .text-slate-700,
+.dark .text-slate-600,
+html.dark .text-slate-700,
+html.dark .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+
+.dark .text-slate-500,
+.dark .text-slate-400,
+html.dark .text-slate-500,
+html.dark .text-slate-400 {
+  color: #94a3b8 !important;
+}
+
+.dark .border-slate-200,
+.dark [class*="border-slate-200"],
+.dark [class*="border-slate-100"],
+.dark .border-emerald-100,
+html.dark .border-slate-200,
+html.dark [class*="border-slate-200"],
+html.dark [class*="border-slate-100"] {
+  border-color: #1a2a44 !important;
+}
+
+/* Badges & Soft Color Chips in Dark Mode */
+.dark .bg-emerald-50,
+html.dark .bg-emerald-50 {
+  background-color: rgba(16, 185, 129, 0.15) !important;
+  color: #34d399 !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
+}
+
+.dark .bg-sky-50,
+html.dark .bg-sky-50 {
+  background-color: rgba(14, 165, 233, 0.15) !important;
+  color: #38bdf8 !important;
+  border-color: rgba(14, 165, 233, 0.35) !important;
+}
+
+/* Buttons in Dark Mode */
+.dark .btn-sky-outline,
+html.dark .btn-sky-outline {
+  background: rgba(2, 132, 199, 0.15) !important;
+  border-color: #0284c7 !important;
+  color: #38bdf8 !important;
+}
+
+.dark .btn-sky-outline:hover,
+html.dark .btn-sky-outline:hover {
+  background: rgba(2, 132, 199, 0.3) !important;
+  color: #e0f2fe !important;
+  border-color: #38bdf8 !important;
+}
+
+.dark .btn-mint-outline,
+html.dark .btn-mint-outline {
+  background: rgba(16, 185, 129, 0.15) !important;
+  border-color: #10b981 !important;
+  color: #34d399 !important;
+}
+
+.dark .btn-mint-outline:hover,
+html.dark .btn-mint-outline:hover {
+  background: rgba(16, 185, 129, 0.3) !important;
+  color: #d1fae5 !important;
+}
+
+/* Inputs & Form Fields in Dark Mode */
+.dark input,
+.dark select,
+.dark textarea,
+html.dark input,
+html.dark select,
+html.dark textarea {
+  background-color: #091322 !important;
+  border-color: #1d2f4d !important;
+  color: #f8fafc !important;
+}
+
+.dark input::placeholder,
+.dark textarea::placeholder,
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: #64748b !important;
+}
+
+/* Dark Calibration Feature Strip (Area Tengah Halaman) */
+.dark #layanan-anisa,
+.dark section#layanan-anisa,
+html.dark #layanan-anisa,
+html.dark section#layanan-anisa {
+  background: linear-gradient(135deg, #091528 0%, #0c1e38 50%, #0a172c 100%) !important;
+  border-color: #1e3556 !important;
+  color: #f1f5f9 !important;
+}
+
+/* Dark Footer */
+.dark footer,
+html.dark footer {
+  background-color: #060b14 !important;
+  border-top-color: #152238 !important;
+}
+
+.dark footer .text-slate-900,
+html.dark footer .text-slate-900 {
+  color: #f8fafc !important;
+}
+
+.dark footer .text-slate-500,
+.dark footer .text-slate-600,
+html.dark footer .text-slate-500,
+html.dark footer .text-slate-600 {
+  color: #94a3b8 !important;
+}
+
+/* Dark Scrollbars */
+.dark ::-webkit-scrollbar-track,
+html.dark ::-webkit-scrollbar-track {
+  background: #080f1d !important;
+}
+
+.dark ::-webkit-scrollbar-thumb,
+html.dark ::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.35) !important;
+  border: 2px solid #080f1d !important;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover,
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.75) !important;
+}
+

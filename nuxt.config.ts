@@ -1,6 +1,8 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
+  modules: ['@nuxt/ui'],
+  css: ['~/assets/css/main.css'],
   devtools: { enabled: true },
   runtimeConfig: {
     public: {
@@ -10,9 +12,9 @@ export default defineNuxtConfig({
   },
   app: {
     head: {
-      title: 'Nuxt 4 + Laravel Herd API Dashboard',
+      title: 'Anisa Medika - Toko & Distributor Alat Kesehatan (Alkes) Terpercaya',
       meta: [
-        { name: 'description', content: 'Decoupled Nuxt.js frontend connected to Laravel Herd API backend.' }
+        { name: 'description', content: 'Anisa Medika: Toko dan penyedia resmi alat kesehatan (alkes) medis modern berstandar Kemenkes RI. Instrumen diagnostik, monitoring ICU, defibrillator, dan perlengkapan bedah terpercaya.' }
       ],
       link: [
         { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
