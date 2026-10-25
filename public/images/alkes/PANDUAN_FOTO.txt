@@ -1,0 +1,36 @@
+========================================================================
+PANDUAN MEMASUKKAN FOTO ALAT KESEHATAN (ALKES) - ANISA MEDIKA
+========================================================================
+
+Folder ini dipersiapkan agar Anda dapat menaruh file foto alkes Anda sendiri
+dengan sangat mudah.
+
+NAMA FILE YANG SUDAH DIVERIFIKASI DAN SIAP DIGUNAKAN:
+------------------------------------------------------------------------
+1.  tensimeter.jpg       -> Foto Tensimeter Digital Otomatis
+2.  stetoskop.jpg        -> Foto Stetoskop Kardiologi Precision
+3.  oximeter.jpg         -> Foto Pulse Oximeter Fingertip OLED
+4.  defibrillator.jpg    -> Foto Automated External Defibrillator (AED)
+5.  ekg.jpg              -> Foto Mesin Elektrokardiograf 12-Lead
+6.  nebulizer.jpg        -> Foto Kompresor Nebulizer Portabel
+7.  patient-monitor.jpg  -> Foto Bedside Patient Monitor ICU
+8.  syringe-pump.jpg     -> Foto Syringe Infusion Pump
+9.  kursi-roda.jpg       -> Foto Kursi Roda Stainless Steel Medis
+10. usg-4d.jpg           -> Foto Mesin Ultrasonografi (USG) 4D
+11. mikroskop.jpg        -> Foto Mikroskop Laboratorium LED
+12. suction-pump.jpg     -> Foto Medical Suction Aspirator
+
+CARA MENGGANTI FOTO:
+------------------------------------------------------------------------
+1. Cukup copy/salin file foto alat kesehatan Anda ke dalam folder ini:
+   public/images/alkes/
+2. Beri nama file sesuai daftar nama di atas (misalnya: tensimeter.jpg).
+3. Halaman web Nuxt akan otomatis menampilkan foto Anda!
+4. Jika file belum dimasukkan atau gagal dimuat, web akan secara cerdas
+   menampilkan foto cadangan medis beresolusi tinggi (Unsplash) tanpa
+   membuat tampilan website error / rusak.
+
+Jika Anda ingin mengubah nama file atau menambah alat baru, Anda cukup
+mengedit file konfigurasi di:
+app/data/alkesData.ts
+========================================================================
