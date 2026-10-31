@@ -1,13 +1,18 @@
-// https://nuxt.com/docs/api/configuration/nuxt-config
+﻿// https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   modules: ['@nuxt/ui'],
   css: ['~/assets/css/main.css'],
   devtools: { enabled: true },
   runtimeConfig: {
+    midtransServerKey: process.env.NUXT_PUBLIC_MIDTRANS_SERVER_KEY || 'SB-Mid-server-FVYRHW4KMT1AgoyI.cfgKDnt',
     public: {
       // Nilai default, otomatis di-override oleh NUXT_PUBLIC_API_BASE di file .env
-      apiBase: 'http://app.test/api'
+      apiBase: 'http://app.test/api',
+      midtransClientKey: process.env.NUXT_PUBLIC_MIDTRANS_CLIENT_KEY || 'Mid-client-hwnw4ojbmqqrRRRS',
+      midtransServerKey: 'SB-Mid-server-FVYRHW4KMT1AgoyI.cfgKDnt',
+      midtransSnapUrl: 'https://app.sandbox.midtrans.com/snap/snap.js',
+      midtransApiUrl: process.env.NUXT_PUBLIC_MIDTRANS_API_URL || 'http://172.16.7.19:8000/api/midtrans-token'
     }
   },
   app: {
@@ -20,8 +25,14 @@ export default defineNuxtConfig({
         { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
         { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
         { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap' }
+      ],
+      script: [
+        {
+          src: 'https://app.sandbox.midtrans.com/snap/snap.js',
+          'data-client-key': process.env.NUXT_PUBLIC_MIDTRANS_CLIENT_KEY || 'Mid-client-hwnw4ojbmqqrRRRS',
+          defer: true
+        }
       ]
     }
   }
 })
-

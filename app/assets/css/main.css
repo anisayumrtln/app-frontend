@@ -410,3 +410,31 @@ html.dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(16, 185, 129, 0.75) !important;
 }
 
+
+/* --------------------------------------------------------------------------
+   Invoice & Receipt Print Styling (Midtrans)
+   -------------------------------------------------------------------------- */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-receipt-area,
+  .print-receipt-area * {
+    visibility: visible;
+  }
+  .print-receipt-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0 !important;
+    padding: 30px !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+  .print-receipt-area button {
+    display: none !important;
+  }
+}

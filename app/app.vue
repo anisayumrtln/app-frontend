@@ -375,6 +375,328 @@ const kirimPenawaran = () => {
 }
 
 // ============================================================================
+// 7B. INTEGRASI PEMBAYARAN MIDTRANS SNAP (SANDBOX)
+// ============================================================================
+useHead({
+  script: [
+    {
+      src: 'https://app.sandbox.midtrans.com/snap/snap.js',
+      'data-client-key': (config.public.midtransClientKey as string) || 'Mid-client-hwnw4ojbmqqrRRRS',
+      defer: true
+    }
+  ]
+})
+
+const isCheckoutModalOpen = ref(false)
+const checkoutItem = ref<AlkesItem | null>(null)
+const checkoutQty = ref(1)
+const checkoutForm = ref({
+  first_name: 'Budi Santoso',
+  email: 'budi.santoso@example.com',
+  phone: '081234567890',
+  catatan: ''
+})
+const isProcessingPayment = ref(false)
+const paymentResult = ref<any>(null)
+const isPaymentSuccessModalOpen = ref(false)
+const isPaymentPendingModalOpen = ref(false)
+
+const checkoutUnitPrice = computed(() => {
+  if (!checkoutItem.value) return 500000
+  const parsed = parsePriceNumber(checkoutItem.value.harga_estimasi)
+  return parsed > 0 ? parsed : 500000
+})
+
+const checkoutGrossAmount = computed(() => {
+  return checkoutUnitPrice.value * checkoutQty.value
+})
+
+const formatRupiah = (val: number): string => {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    maximumFractionDigits: 0
+  }).format(val || 0)
+}
+
+const bukaModalCheckout = (item?: AlkesItem) => {
+  if (item) {
+    checkoutItem.value = item
+  } else if (!checkoutItem.value && localAlkesList.value.length > 0) {
+    checkoutItem.value = localAlkesList.value[0]
+  }
+  checkoutQty.value = 1
+  isCheckoutModalOpen.value = true
+}
+
+const ubahCheckoutQty = (delta: number) => {
+  const next = checkoutQty.value + delta
+  if (next >= 1 && next <= (checkoutItem.value?.stok || 99)) {
+    checkoutQty.value = next
+  }
+}
+
+// Pastikan script Midtrans Snap SDK termuat dengan tepat sesuai environment (Sandbox)
+const loadMidtransSnap = (isProduction = false): Promise<any> => {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') return resolve(null)
+
+    const expectedSrc = isProduction
+      ? 'https://app.midtrans.com/snap/snap.js'
+      : 'https://app.sandbox.midtrans.com/snap/snap.js'
+
+    const clientKey = (config.public.midtransClientKey as string) || 'Mid-client-7fwVxW4j40g8TI10'
+
+    // Bersihkan script Production jika kita berada di mode Sandbox
+    let needsNewScript = false
+    const existingScripts = document.querySelectorAll('script[src*="snap.js"]')
+    existingScripts.forEach((s) => {
+      const src = (s as HTMLScriptElement).src || ''
+      if (!isProduction && !src.includes('sandbox.midtrans.com') && src.includes('midtrans.com')) {
+        console.log('[Midtrans] Menghapus script Production lama dan beralih ke Sandbox')
+        s.remove()
+        needsNewScript = true
+        delete (window as any).snap
+      }
+    })
+
+    if (!needsNewScript && (window as any).snap) {
+      return resolve((window as any).snap)
+    }
+
+    const script = document.createElement('script')
+    script.src = expectedSrc
+    script.setAttribute('data-client-key', clientKey)
+    script.async = true
+    script.onload = () => {
+      console.log('[Midtrans Snap SDK] Berhasil dimuat dari Sandbox:', expectedSrc)
+      resolve((window as any).snap)
+    }
+    script.onerror = () => {
+      console.warn('[Midtrans] Gagal memuat script snap.js dari:', expectedSrc)
+      resolve(null)
+    }
+    document.head.appendChild(script)
+  })
+}
+
+// Alur Eksekusi Bayar Sekarang: Request Token menggunakan Server Key Sandbox -> Jalankan window.snap.pay
+const prosesPembayaranMidtrans = async () => {
+  const totalHarga = Number(checkoutGrossAmount.value)
+  if (!totalHarga || totalHarga <= 0) {
+    toast.add({
+      title: 'Nominal Tidak Valid',
+      description: 'Total transaksi pembayaran harus lebih besar dari Rp 0.',
+      color: 'warning'
+    })
+    return
+  }
+
+  // Server Key Sandbox Midtrans resmi yang baru saja di-generate
+  const MIDTRANS_SERVER_KEY = 'SB-Mid-server-FVYRHW4KMT1AgoyI.cfgKDnt'
+
+  // Penyesuaian Payload Data
+  const namaPelanggan = checkoutForm.value.first_name?.trim() || 'Pelanggan'
+  const emailPelanggan = checkoutForm.value.email?.trim() || 'pelanggan@example.com'
+  const namaAlat = checkoutItem.value?.nama_alat || checkoutItem.value?.nama || 'Alat Medis Anisa Medika'
+
+  const payload = {
+    gross_amount: Number(totalHarga),
+    first_name: namaPelanggan || 'Pelanggan',
+    email: emailPelanggan || 'pelanggan@example.com',
+    item_name: namaAlat,
+    alat_id: checkoutItem.value?.id || null,
+    qty: Number(checkoutQty.value) || 1,
+    server_key: MIDTRANS_SERVER_KEY
+  }
+
+  // Mulai status loading pada tombol Bayar Sekarang
+  isProcessingPayment.value = true
+
+  try {
+    // Pastikan script Midtrans Snap SDK Sandbox termuat di browser
+    if (typeof window !== 'undefined' && !(window as any).snap) {
+      await loadMidtransSnap(false).catch(() => null)
+    }
+
+    // Endpoint pemanggil token (Nuxt proxy didahulukan karena memiliki fallback direct Midtrans Sandbox API)
+    const candidateEndpoints = [
+      '/api/midtrans-token',
+      'http://localhost:8000/api/midtrans-token',
+      'http://192.168.1.2:8000/api/midtrans-token',
+      'http://127.0.0.1:8000/api/midtrans-token',
+      (config.public.midtransApiUrl as string) || '',
+      'http://172.16.7.19:8000/api/midtrans-token'
+    ].filter(Boolean)
+    const endpoints = Array.from(new Set(candidateEndpoints))
+
+    let responseData: any = null
+    let connectedEndpoint = ''
+    let lastNetworkError: any = null
+
+    for (const ep of endpoints) {
+      try {
+        console.log(`[Midtrans] Meminta Snap Token ke ${ep} dengan Server Key:`, MIDTRANS_SERVER_KEY)
+
+        const response = await fetch(ep, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-Server-Key': MIDTRANS_SERVER_KEY
+          },
+          body: JSON.stringify(payload)
+        })
+
+        // Ambil data respon sebagai JSON atau teks
+        let data: any = null
+        const rawText = await response.text().catch(() => '')
+        try {
+          data = JSON.parse(rawText)
+        } catch (_) {
+          data = rawText ? { message: rawText } : null
+        }
+
+        console.log(`[Midtrans] Status HTTP dari ${ep}:`, response.status, data)
+
+        // Periksa apakah respon mengembalikan token
+        const foundToken = data?.snap_token || data?.token || data?.data?.snap_token || data?.data?.token
+        if (foundToken) {
+          responseData = data
+          connectedEndpoint = ep
+          break
+        }
+
+        // Jika endpoint bukan proxy dan mengembalikan error, lanjut coba proxy
+        if (!response.ok && ep === '/api/midtrans-token') {
+          const detailError = data?.message || data?.error || data?.data?.message || data?.data?.error || (typeof data === 'string' ? data : (rawText || `HTTP Error ${response.status}`))
+          console.error(`[Midtrans Error]:`, detailError)
+          alert(`[Error Midtrans Token]:\n\n${detailError}`)
+          isProcessingPayment.value = false
+          return
+        }
+
+      } catch (err: any) {
+        lastNetworkError = err
+        console.warn(`[Midtrans] Gagal terhubung ke endpoint ${ep}:`, err?.message || err)
+      }
+    }
+
+    if (!responseData) {
+      const msg = lastNetworkError?.message || 'Gagal memperoleh token dari Midtrans.'
+      console.error('[Midtrans Error Koneksi]:', lastNetworkError)
+      alert(`Gagal menghubungi server token Midtrans.\n\nPesan: ${msg}`)
+      isProcessingPayment.value = false
+      return
+    }
+
+    // Eksekusi Midtrans Snap:
+    // Jika response berhasil (menghasilkan snap_token atau token), langsung panggil window.snap.pay(data.snap_token || data.token)
+    const token = responseData.snap_token || responseData.token || responseData.data?.snap_token || responseData.data?.token
+
+    if (!token) {
+      console.error('[Midtrans Error]: Respon sukses tapi tidak ada snap_token atau token:', responseData)
+      alert(`Respon sukses (${connectedEndpoint}), namun token tidak ditemukan:\n\n${JSON.stringify(responseData, null, 2)}`)
+      isProcessingPayment.value = false
+      return
+    }
+
+    console.log('[Midtrans Sandbox] Token pembayaran berhasil diperoleh:', token)
+
+    // Pastikan SDK Midtrans Sandbox siap sebelum snap.pay dipanggil
+    const snapRunner = await loadMidtransSnap(false).catch(() => null) || (window as any).snap
+    if (snapRunner && typeof snapRunner.pay === 'function') {
+      console.log('[Midtrans] Menjalankan window.snap.pay dengan token Sandbox:', token)
+      snapRunner.pay(token, {
+        onSuccess: function (result: any) {
+          isProcessingPayment.value = false
+          paymentResult.value = result
+          isCheckoutModalOpen.value = false
+          isPaymentSuccessModalOpen.value = true
+          toast.add({
+            title: 'Pembayaran Sukses!',
+            description: `Transaksi ${result?.order_id || ''} berhasil diverifikasi.`,
+            color: 'success'
+          })
+
+          // Beritahu backend Laravel untuk update status transaksi ke sukses & kurangi stok
+          const callbackPayload = {
+            order_id: result?.order_id,
+            payment_type: result?.payment_type,
+            transaction_status: result?.transaction_status || 'settlement'
+          }
+
+          const callbackUrls = [
+            'http://localhost:8000/api/midtrans-callback',
+            'http://127.0.0.1:8000/api/midtrans-callback',
+            '/api/midtrans-callback'
+          ]
+          for (const cbUrl of callbackUrls) {
+            fetch(cbUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify(callbackPayload)
+            }).then(() => {
+              if (typeof refresh === 'function') refresh()
+            }).catch(() => null)
+          }
+
+          // Kurangi stok lokal di frontend secara langsung
+          if (checkoutItem.value) {
+            checkoutItem.value.stok = Math.max(0, (checkoutItem.value.stok || 1) - checkoutQty.value)
+            const target = localAlkesList.value.find(a => a.id === checkoutItem.value?.id || a.nama_alat === checkoutItem.value?.nama_alat)
+            if (target) {
+              target.stok = Math.max(0, (target.stok || 1) - checkoutQty.value)
+            }
+          }
+        },
+        onPending: function (result: any) {
+          isProcessingPayment.value = false
+          paymentResult.value = result
+          isCheckoutModalOpen.value = false
+          isPaymentPendingModalOpen.value = true
+          toast.add({
+            title: 'Menunggu Pembayaran',
+            description: result?.status_message || 'Selesaikan pembayaran menggunakan instruksi yang tertera.',
+            color: 'warning'
+          })
+        },
+        onError: function (result: any) {
+          isProcessingPayment.value = false
+          paymentResult.value = result
+          toast.add({
+            title: 'Pembayaran Gagal',
+            description: result?.status_message || 'Terjadi kendala saat pembayaran berlangsung.',
+            color: 'error'
+          })
+        },
+        onClose: function () {
+          isProcessingPayment.value = false
+          toast.add({
+            title: 'Pop-up Ditutup',
+            description: 'Anda menutup pop-up Midtrans sebelum transaksi selesai.',
+            color: 'warning'
+          })
+        }
+      })
+    } else {
+      alert('SDK Midtrans Snap (snap.js) belum siap di browser. Pastikan koneksi internet stabil.')
+    }
+
+    isProcessingPayment.value = false
+
+  } catch (err: any) {
+    isProcessingPayment.value = false
+    console.error('[Midtrans Snap Error]:', err)
+    toast.add({
+      title: 'Peringatan Integrasi Midtrans',
+      description: err?.message || 'Gagal memproses transaksi.',
+      color: 'error'
+    })
+  }
+}
+
+// ============================================================================
 // 8. MANAJEMEN INVENTARIS ALKES (BACK-OFFICE)
 // ============================================================================
 const searchQuery = ref('')
@@ -666,6 +988,17 @@ const hapusAlat = (item: AlkesItem) => {
               </div>
             </button>
 
+            <!-- Tombol Bayar Sekarang (Midtrans Snap) -->
+            <button
+              type="button"
+              class="hidden md:inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-bold uppercase tracking-wider shadow-sm hover:shadow-md transition-all cursor-pointer"
+              @click="bukaModalCheckout()"
+              title="Buka Pembayaran Midtrans Snap"
+            >
+              <UIcon name="i-lucide-credit-card" class="w-4 h-4" />
+              <span>Bayar Sekarang</span>
+            </button>
+
             <!-- Tombol Mint: Minta Penawaran E-Katalog -->
             <button
               type="button"
@@ -740,7 +1073,15 @@ const hapusAlat = (item: AlkesItem) => {
           >
             Layanan & Uji Kalibrasi
           </button>
-          <div class="pt-2">
+          <div class="pt-2 space-y-2">
+            <button
+              type="button"
+              class="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm"
+              @click="bukaModalCheckout()"
+            >
+              <UIcon name="i-lucide-credit-card" class="w-4 h-4" />
+              <span>Bayar Sekarang (Midtrans Snap)</span>
+            </button>
             <button
               type="button"
               class="w-full py-3 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider text-center"
@@ -1088,34 +1429,51 @@ const hapusAlat = (item: AlkesItem) => {
                   </p>
                 </div>
 
-                <!-- Estimasi Harga Resmi & Tombol Pesan -->
-                <div class="pt-3 border-t border-slate-100 flex items-center justify-between">
-                  <div>
-                    <div class="text-[10px] text-slate-400 font-medium">Estimasi Harga</div>
-                    <div class="text-xs font-black text-emerald-700">
-                      {{ alat.harga_estimasi || 'Hubungi Sales' }}
+                <!-- Estimasi Harga Resmi & 2 Tombol Aksi Fleksibel -->
+                <div class="pt-3 border-t border-slate-100 flex flex-col gap-3">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <div class="text-[10px] text-slate-400 font-medium">Estimasi Harga</div>
+                      <div class="text-sm font-bold text-emerald-700">
+                        {{ alat.harga_estimasi || 'Hubungi Sales' }}
+                      </div>
                     </div>
+                    <span class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                      <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                      {{ alat.stok ? `${alat.stok} Unit` : 'Tersedia' }}
+                    </span>
                   </div>
 
-                  <div class="flex items-center gap-1.5">
+                  <!-- 3 Tombol: Lihat Detail, Pesan & Bayar Sekarang (Midtrans) -->
+                  <div class="grid grid-cols-3 gap-1.5">
                     <button
                       type="button"
-                      class="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:text-emerald-700 hover:border-emerald-300 text-xs font-semibold flex items-center gap-1 transition-all"
+                      class="py-2 px-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 hover:text-emerald-700 hover:border-emerald-300 text-[11px] font-semibold flex items-center justify-center gap-1 transition-all cursor-pointer shadow-2xs"
                       @click="bukaDetailAlat(alat)"
-                      title="Lihat Lembar Spesifikasi"
+                      title="Lihat Detail Produk"
                     >
-                      <UIcon name="i-lucide-eye" class="w-3.5 h-3.5 text-slate-500" />
-                      <span>Detail</span>
+                      <UIcon name="i-lucide-eye" class="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <span class="truncate">Detail</span>
                     </button>
 
                     <button
                       type="button"
-                      class="px-3 py-1.5 rounded-lg btn-mint text-xs font-bold flex items-center gap-1"
+                      class="py-2 px-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-[11px] font-semibold flex items-center justify-center gap-1 transition-all cursor-pointer shadow-2xs"
                       @click="bukaModalPenawaran(alat.nama_alat)"
-                      title="Minta Penawaran Cepat"
+                      title="Minta Penawaran WhatsApp"
                     >
-                      <UIcon name="i-lucide-message-circle" class="w-3.5 h-3.5" />
-                      <span>Pesan</span>
+                      <UIcon name="i-lucide-file-text" class="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      <span class="truncate">Pesan</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      class="py-2 px-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-[11px] font-bold flex items-center justify-center gap-1 transition-all cursor-pointer shadow-xs"
+                      @click="bukaModalCheckout(alat)"
+                      title="Bayar Sekarang via Midtrans Snap"
+                    >
+                      <UIcon name="i-lucide-credit-card" class="w-3.5 h-3.5 shrink-0" />
+                      <span class="truncate">Bayar</span>
                     </button>
                   </div>
                 </div>
@@ -1753,22 +2111,38 @@ const hapusAlat = (item: AlkesItem) => {
               </div>
 
               <!-- Modal Footer -->
-              <div class="pt-4 border-t border-slate-100 flex items-center justify-between">
-                <button
-                  type="button"
-                  class="px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900 text-xs font-semibold"
-                  @click="isDetailModalOpen = false"
-                >
-                  Tutup
-                </button>
-                <button
-                  type="button"
-                  class="px-5 py-2.5 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider flex items-center gap-1.5"
-                  @click="isDetailModalOpen = false; bukaModalPenawaran(selectedDetailItem?.nama_alat)"
-                >
-                  <UIcon name="i-lucide-send" class="w-4 h-4" />
-                  <span>Minta Penawaran Harga Resmi</span>
-                </button>
+              <div class="pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <!-- Aksi Sebelah Kiri: Tutup -->
+                <div>
+                  <button
+                    type="button"
+                    class="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 text-xs font-semibold transition-all cursor-pointer"
+                    @click="isDetailModalOpen = false"
+                  >
+                    Tutup
+                  </button>
+                </div>
+
+                <!-- Aksi Sebelah Kanan: Minta Penawaran & Bayar Sekarang -->
+                <div class="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+                  <button
+                    type="button"
+                    class="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-700 text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-2xs"
+                    @click="isDetailModalOpen = false; bukaModalPenawaran(selectedDetailItem?.nama_alat)"
+                  >
+                    <UIcon name="i-lucide-file-text" class="w-4 h-4 text-emerald-600" />
+                    <span>Minta Penawaran</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="flex-1 sm:flex-none px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-sm hover:shadow-md transition-all cursor-pointer"
+                    @click="isDetailModalOpen = false; bukaModalCheckout(selectedDetailItem)"
+                  >
+                    <UIcon name="i-lucide-credit-card" class="w-4 h-4" />
+                    <span>Bayar Sekarang</span>
+                  </button>
+                </div>
               </div>
 
             </div>
@@ -2242,6 +2616,441 @@ const hapusAlat = (item: AlkesItem) => {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </transition>
+      </Teleport>
+
+      <!-- ============================================================== -->
+      <!-- MODAL CHECKOUT & PEMBAYARAN MIDTRANS SNAP                     -->
+      <!-- ============================================================== -->
+      <Teleport to="body">
+        <transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0 scale-95"
+          enter-to-class="opacity-100 scale-100"
+          leave-active-class="transition duration-150 ease-in"
+          leave-from-class="opacity-100 scale-100"
+          leave-to-class="opacity-0 scale-95"
+        >
+          <div
+            v-if="isCheckoutModalOpen && checkoutItem"
+            class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+            @click.self="isCheckoutModalOpen = false"
+          >
+            <div class="relative w-full max-w-3xl bg-white border border-slate-200 rounded-3xl shadow-2xl p-5 sm:p-7 overflow-hidden my-6">
+              
+              <!-- Modal Header -->
+              <div class="flex items-start justify-between pb-4 border-b border-slate-100">
+                <div class="space-y-1">
+                  <div class="flex items-center gap-2">
+                    <span class="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      <UIcon name="i-lucide-shield-check" class="w-3.5 h-3.5" />
+                      Midtrans Snap Sandbox
+                    </span>
+                    <span class="text-[11px] font-semibold text-slate-400">Pembayaran Resmi</span>
+                  </div>
+                  <h3 class="text-base sm:text-xl font-extrabold text-slate-900 tracking-tight">
+                    Checkout & Pembayaran Alkes
+                  </h3>
+                  <p class="text-xs text-slate-500">
+                    Selesaikan pesanan alat kesehatan dengan proses cepat dan aman terenkripsi.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="p-2 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                  @click="isCheckoutModalOpen = false"
+                >
+                  <UIcon name="i-lucide-x" class="w-5 h-5" />
+                </button>
+              </div>
+
+              <!-- Modal Body Grid (2 Kolom di Desktop) -->
+              <div class="py-5 grid grid-cols-1 lg:grid-cols-12 gap-6 max-h-[70vh] overflow-y-auto pr-1">
+                
+                <!-- Kolom Kiri: Rincian Barang & Kalkulasi Total (5 Kolom) -->
+                <div class="lg:col-span-5 space-y-4">
+                  <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                    <div class="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                      <UIcon name="i-lucide-shopping-bag" class="w-4 h-4 text-emerald-600" />
+                      Rincian Barang Terpilih
+                    </div>
+
+                    <!-- Thumbnail & Info Produk -->
+                    <div class="flex gap-3">
+                      <div class="w-20 h-20 rounded-xl bg-white border border-slate-200 overflow-hidden shrink-0 flex items-center justify-center p-1.5">
+                        <img
+                          :src="checkoutItem.gambar || checkoutItem.fallbackGambar"
+                          :alt="checkoutItem.nama_alat"
+                          class="w-full h-full object-contain"
+                          @error="(e) => handleImgError(e, checkoutItem?.fallbackGambar)"
+                        />
+                      </div>
+                      <div class="flex-1 min-w-0">
+                        <span class="text-[10px] font-bold font-mono px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">
+                          {{ checkoutItem.kode_alat }}
+                        </span>
+                        <h4 class="text-xs font-bold text-slate-900 mt-1 line-clamp-2">
+                          {{ checkoutItem.nama_alat }}
+                        </h4>
+                        <div class="text-[11px] text-slate-500 mt-0.5">
+                          Kategori: {{ checkoutItem.kategori }}
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Unit Price & Quantity Selector -->
+                    <div class="pt-3 border-t border-slate-200 flex items-center justify-between text-xs">
+                      <div>
+                        <span class="text-slate-500 block text-[10px]">Harga Satuan:</span>
+                        <strong class="text-slate-900 font-bold">{{ formatRupiah(checkoutUnitPrice) }}</strong>
+                      </div>
+                      <div class="flex items-center gap-2">
+                        <span class="text-slate-500 text-[11px]">Jumlah:</span>
+                        <div class="flex items-center border border-slate-300 rounded-lg bg-white overflow-hidden">
+                          <button
+                            type="button"
+                            class="px-2 py-1 text-slate-600 hover:bg-slate-100 font-bold disabled:opacity-40"
+                            :disabled="checkoutQty <= 1"
+                            @click="ubahCheckoutQty(-1)"
+                          >
+                            -
+                          </button>
+                          <span class="px-2.5 py-1 text-xs font-bold text-slate-900 min-w-7 text-center">
+                            {{ checkoutQty }}
+                          </span>
+                          <button
+                            type="button"
+                            class="px-2 py-1 text-slate-600 hover:bg-slate-100 font-bold disabled:opacity-40"
+                            :disabled="checkoutQty >= (checkoutItem.stok || 99)"
+                            @click="ubahCheckoutQty(1)"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Ringkasan Biaya -->
+                  <div class="p-4 rounded-2xl bg-emerald-50/70 border border-emerald-200 space-y-2 text-xs">
+                    <div class="flex justify-between text-slate-600">
+                      <span>Subtotal ({{ checkoutQty }} unit):</span>
+                      <span class="font-semibold text-slate-900">{{ formatRupiah(checkoutGrossAmount) }}</span>
+                    </div>
+                    <div class="flex justify-between text-slate-600">
+                      <span>Biaya Layanan & Pajak:</span>
+                      <span class="font-semibold text-emerald-700">Rp 0 (Ditanggung Toko)</span>
+                    </div>
+                    <div class="pt-2 border-t border-emerald-200 flex justify-between items-baseline">
+                      <span class="font-bold text-slate-900 text-sm">Total Bayar:</span>
+                      <strong class="font-extrabold text-emerald-700 text-base sm:text-lg">
+                        {{ formatRupiah(checkoutGrossAmount) }}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <!-- Channel Pembayaran Terverifikasi -->
+                  <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                    <div class="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1">
+                      <UIcon name="i-lucide-check-circle-2" class="w-3.5 h-3.5 text-emerald-600" />
+                      Metode Pembayaran Didukung
+                    </div>
+                    <div class="flex flex-wrap gap-1.5 text-[10px] font-medium text-slate-700">
+                      <span class="px-2 py-0.5 rounded bg-white border border-slate-200 shadow-2xs">QRIS / GoPay</span>
+                      <span class="px-2 py-0.5 rounded bg-white border border-slate-200 shadow-2xs">ShopeePay</span>
+                      <span class="px-2 py-0.5 rounded bg-white border border-slate-200 shadow-2xs">BCA VA</span>
+                      <span class="px-2 py-0.5 rounded bg-white border border-slate-200 shadow-2xs">Mandiri Livin</span>
+                      <span class="px-2 py-0.5 rounded bg-white border border-slate-200 shadow-2xs">BNI & BRI</span>
+                      <span class="px-2 py-0.5 rounded bg-white border border-slate-200 shadow-2xs">Kartu Kredit</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Kolom Kanan: Data Pembeli & Tombol Bayar (7 Kolom) -->
+                <div class="lg:col-span-7 space-y-4">
+                  <div class="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                    <UIcon name="i-lucide-user-check" class="w-4 h-4 text-emerald-600" />
+                    Data Pemesan & Tagihan
+                  </div>
+
+                  <form @submit.prevent="prosesPembayaranMidtrans" class="space-y-3.5">
+                    <!-- Input first_name -->
+                    <div>
+                      <label class="block text-xs font-semibold text-slate-700 mb-1">
+                        Nama Lengkap / Nama PIC Instansi <span class="text-rose-500">*</span>
+                      </label>
+                      <div class="relative">
+                        <UIcon name="i-lucide-user" class="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
+                        <input
+                          v-model="checkoutForm.first_name"
+                          type="text"
+                          placeholder="Contoh: dr. Anisa Martalina"
+                          class="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <!-- Input email -->
+                    <div>
+                      <label class="block text-xs font-semibold text-slate-700 mb-1">
+                        Alamat Email Resmi <span class="text-rose-500">*</span>
+                      </label>
+                      <div class="relative">
+                        <UIcon name="i-lucide-mail" class="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
+                        <input
+                          v-model="checkoutForm.email"
+                          type="email"
+                          placeholder="contoh: anisa@klinik.co.id"
+                          class="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                          required
+                        />
+                      </div>
+                      <span class="text-[10px] text-slate-400 mt-1 block">
+                        Invoice resmi dan bukti transaksi Midtrans akan dikirimkan ke email ini.
+                      </span>
+                    </div>
+
+                    <!-- Input phone -->
+                    <div>
+                      <label class="block text-xs font-semibold text-slate-700 mb-1">
+                        Nomor WhatsApp / HP
+                      </label>
+                      <div class="relative">
+                        <UIcon name="i-lucide-phone" class="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
+                        <input
+                          v-model="checkoutForm.phone"
+                          type="text"
+                          placeholder="081234567890"
+                          class="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                        />
+                      </div>
+                    </div>
+
+                    <!-- Input Catatan Tambahan -->
+                    <div>
+                      <label class="block text-xs font-semibold text-slate-700 mb-1">
+                        Catatan Pengiriman / Nama Fasilitas Kesehatan (Opsional)
+                      </label>
+                      <textarea
+                        v-model="checkoutForm.catatan"
+                        rows="2"
+                        placeholder="Contoh: Unit Gawat Darurat RSUD, sertakan surat kalibrasi..."
+                        class="w-full px-3.5 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-emerald-500 focus:bg-white"
+                      ></textarea>
+                    </div>
+
+                    <!-- Security Alert Note -->
+                    <div class="p-3 rounded-xl bg-sky-50 border border-sky-200 flex items-start gap-2.5 text-[11px] text-sky-800">
+                      <UIcon name="i-lucide-info" class="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong>Mode Pengujian (Sandbox):</strong> Gunakan nomor kartu tes atau simulator Virtual Account Midtrans resmi untuk mencoba pembayaran tanpa pemotongan saldo nyata.
+                      </div>
+                    </div>
+
+                    <!-- Tombol Bayar Sekarang Action -->
+                    <div class="pt-2">
+                      <button
+                        type="submit"
+                        :disabled="isProcessingPayment"
+                        class="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold text-sm uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg hover:shadow-xl transition-all disabled:opacity-75 cursor-pointer"
+                      >
+                        <UIcon
+                          v-if="isProcessingPayment"
+                          name="i-lucide-loader-2"
+                          class="w-5 h-5 animate-spin"
+                        />
+                        <UIcon
+                          v-else
+                          name="i-lucide-lock"
+                          class="w-5 h-5"
+                        />
+                        <span>{{ isProcessingPayment ? 'Menyiapkan Midtrans Snap...' : 'Bayar Sekarang - ' + formatRupiah(checkoutGrossAmount) }}</span>
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+              </div>
+
+              <!-- Modal Footer -->
+              <div class="pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                <div class="flex items-center gap-1.5">
+                  <UIcon name="i-lucide-shield-alert" class="w-4 h-4 text-emerald-600" />
+                  <span>Enkripsi SSL 256-bit & Gateway Terlisensi</span>
+                </div>
+                <button
+                  type="button"
+                  class="px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900 font-semibold"
+                  @click="isCheckoutModalOpen = false"
+                >
+                  Batal
+                </button>
+              </div>
+
+            </div>
+          </div>
+        </transition>
+      </Teleport>
+
+      <!-- ============================================================== -->
+      <!-- MODAL PEMBAYARAN BERHASIL (SUCCESS STATE)                     -->
+      <!-- ============================================================== -->
+      <Teleport to="body">
+        <transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0 scale-95"
+          enter-to-class="opacity-100 scale-100"
+          leave-active-class="transition duration-150 ease-in"
+          leave-from-class="opacity-100 scale-100"
+          leave-to-class="opacity-0 scale-95"
+        >
+          <div
+            v-if="isPaymentSuccessModalOpen"
+            class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+            @click.self="isPaymentSuccessModalOpen = false"
+          >
+            <div class="relative w-full max-w-lg bg-white border border-slate-200 rounded-3xl shadow-2xl p-6 sm:p-8 text-center space-y-5 my-8 print-receipt-area">
+              <div class="w-20 h-20 rounded-full bg-emerald-100 text-emerald-600 mx-auto flex items-center justify-center shadow-inner">
+                <UIcon name="i-lucide-check-circle" class="w-12 h-12" />
+              </div>
+
+              <div class="space-y-1">
+                <span class="text-xs font-bold uppercase tracking-wider text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full">
+                  Transaksi Berhasil
+                </span>
+                <h3 class="text-xl sm:text-2xl font-black text-slate-900 mt-2">
+                  Pembayaran Terkonfirmasi!
+                </h3>
+                <p class="text-xs text-slate-500 max-w-sm mx-auto">
+                  Terima kasih, pesanan alat kesehatan Anda telah berhasil diverifikasi melalui gateway Midtrans.
+                </p>
+              </div>
+
+              <!-- Rincian Nota Pembayaran -->
+              <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 text-left text-xs space-y-2.5">
+                <div class="flex justify-between">
+                  <span class="text-slate-500">ID Pesanan:</span>
+                  <span class="font-mono font-bold text-slate-900">{{ paymentResult?.order_id || 'ORDER-' + Date.now() }}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-slate-500">Alat Dipesan:</span>
+                  <span class="font-semibold text-slate-900">{{ checkoutItem?.nama_alat || 'Alat Medis' }} (x{{ checkoutQty }})</span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-slate-500">Metode Bayar:</span>
+                  <span class="font-semibold text-slate-900 uppercase">{{ paymentResult?.payment_type || 'Midtrans Snap' }}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-slate-500">Status Gateway:</span>
+                  <span class="font-bold text-emerald-700 uppercase">{{ paymentResult?.transaction_status || 'settlement' }}</span>
+                </div>
+                <div class="pt-2 border-t border-slate-200 flex justify-between items-baseline">
+                  <span class="font-bold text-slate-900">Total Dibayar:</span>
+                  <strong class="font-black text-emerald-700 text-base">
+                    {{ formatRupiah(checkoutGrossAmount) }}
+                  </strong>
+                </div>
+              </div>
+
+              <div class="flex flex-col sm:flex-row gap-3 pt-2">
+                <button
+                  type="button"
+                  class="flex-1 py-3 px-5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold flex items-center justify-center gap-1.5"
+                  @click="window.print()"
+                >
+                  <UIcon name="i-lucide-printer" class="w-4 h-4" />
+                  <span>Cetak Tanda Terima</span>
+                </button>
+                <button
+                  type="button"
+                  class="flex-1 py-3 px-5 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5"
+                  @click="isPaymentSuccessModalOpen = false"
+                >
+                  <UIcon name="i-lucide-check" class="w-4 h-4" />
+                  <span>Selesai</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </transition>
+      </Teleport>
+
+      <!-- ============================================================== -->
+      <!-- MODAL STATUS PENDING (INSTRUKSI VA / QRIS)                    -->
+      <!-- ============================================================== -->
+      <Teleport to="body">
+        <transition
+          enter-active-class="transition duration-200 ease-out"
+          enter-from-class="opacity-0 scale-95"
+          enter-to-class="opacity-100 scale-100"
+          leave-active-class="transition duration-150 ease-in"
+          leave-from-class="opacity-100 scale-100"
+          leave-to-class="opacity-0 scale-95"
+        >
+          <div
+            v-if="isPaymentPendingModalOpen"
+            class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+            @click.self="isPaymentPendingModalOpen = false"
+          >
+            <div class="relative w-full max-w-lg bg-white border border-slate-200 rounded-3xl shadow-2xl p-6 sm:p-8 text-center space-y-5 my-8">
+              <div class="w-20 h-20 rounded-full bg-amber-100 text-amber-600 mx-auto flex items-center justify-center shadow-inner">
+                <UIcon name="i-lucide-clock" class="w-12 h-12" />
+              </div>
+
+              <div class="space-y-1">
+                <span class="text-xs font-bold uppercase tracking-wider text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full">
+                  Menunggu Pembayaran
+                </span>
+                <h3 class="text-xl sm:text-2xl font-black text-slate-900 mt-2">
+                  Instruksi Pembayaran Diterbitkan
+                </h3>
+                <p class="text-xs text-slate-500 max-w-sm mx-auto">
+                  Silakan selesaikan pembayaran sesuai nomor Virtual Account atau kode QR yang telah diterbitkan oleh sistem Midtrans.
+                </p>
+              </div>
+
+              <!-- Rincian Tagihan Pending -->
+              <div class="p-4 rounded-2xl bg-amber-50/70 border border-amber-200 text-left text-xs space-y-2.5">
+                <div class="flex justify-between">
+                  <span class="text-slate-600">ID Pesanan:</span>
+                  <span class="font-mono font-bold text-slate-900">{{ paymentResult?.order_id || '-' }}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-slate-600">Metode Tagihan:</span>
+                  <span class="font-semibold text-slate-900 uppercase">{{ paymentResult?.payment_type || 'Virtual Account' }}</span>
+                </div>
+                <div v-if="paymentResult?.va_numbers && paymentResult.va_numbers.length > 0" class="flex justify-between">
+                  <span class="text-slate-600">Nomor Virtual Account:</span>
+                  <span class="font-mono font-bold text-emerald-700 text-sm">{{ paymentResult.va_numbers[0].va_number }} ({{ paymentResult.va_numbers[0].bank?.toUpperCase() }})</span>
+                </div>
+                <div class="pt-2 border-t border-amber-200 flex justify-between items-baseline">
+                  <span class="font-bold text-slate-900">Total Tagihan:</span>
+                  <strong class="font-black text-amber-700 text-base">
+                    {{ formatRupiah(checkoutGrossAmount) }}
+                  </strong>
+                </div>
+              </div>
+
+              <div class="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  class="flex-1 py-3 px-5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold"
+                  @click="isPaymentPendingModalOpen = false"
+                >
+                  Tutup
+                </button>
+                <button
+                  type="button"
+                  class="flex-1 py-3 px-5 rounded-xl btn-mint text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5"
+                  @click="isPaymentPendingModalOpen = false; toast.add({ title: 'Status Disimpan', description: 'Silakan konfirmasi ke admin bila sudah transfer.', color: 'info' })"
+                >
+                  <UIcon name="i-lucide-check-circle" class="w-4 h-4" />
+                  <span>Saya Sudah Transfer</span>
+                </button>
+              </div>
             </div>
           </div>
         </transition>
